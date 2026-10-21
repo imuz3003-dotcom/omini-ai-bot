@@ -297,17 +297,28 @@ async def generate_ai_image(message: types.Message):
     wait_msg = await message.reply("🎨 Rasm chizilmoqda, iltimos kuting...")
 
     try:
+        # Promptni yuqori aniqlikdagi ultra-realistik 8K fotorealistik so'zlar bilan boyitish
         trans_res = await asyncio.to_thread(
             client.models.generate_content,
             model=MODEL_NAME,
-            contents=f"Translate this image description into a detailed English prompt for an AI image generator. Return ONLY the prompt in English without any extra words: {prompt_text}"
+            contents=(
+                f"You are a professional prompt engineer for Flux AI. Convert this user idea into an ultra-sharp, "
+                f"breathtaking, highly detailed, 8k resolution cinematic masterpiece prompt. "
+                f"Include lighting, textures, camera angle, and photorealistic detail. "
+                f"Return ONLY the final English prompt, no extra comments or explanation: {prompt_text}"
+            )
         )
         en_prompt = trans_res.text.strip().replace("\n", " ") if trans_res.text else prompt_text
+        # Maxsus yuqori tiniqlik kalit so'zlari
+        enhanced_prompt = f"{en_prompt}, ultra sharp, 8k resolution, highly detailed, photorealistic, masterpiece, high quality, cinematic lighting, crystal clear"
 
-        encoded_prompt = urllib.parse.quote(en_prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&nologo=true"
+        encoded_prompt = urllib.parse.quote(enhanced_prompt)
+        # flux-realism / flux model va no-logo sozlamasi
+        import time
+        seed = int(time.time())
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=1280&model=flux-realism&seed={seed}&nologo=true&enhance=true"
 
-        caption_text = f"✨ **Tavsif:** {prompt_text}\n👤 **Yaratuvchi:** Muslimbek"
+        caption_text = f"✨ **Tavsif:** {prompt_text}\n💎 **Sifat:** Ultra HD (8K)\n👤 **Yaratuvchi:** Muslimbek"
         await message.answer_photo(photo=image_url, caption=caption_text, parse_mode="Markdown")
         await wait_msg.delete()
 
