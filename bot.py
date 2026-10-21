@@ -297,26 +297,26 @@ async def generate_ai_image(message: types.Message):
     wait_msg = await message.reply("🎨 Rasm chizilmoqda, iltimos kuting...")
 
     try:
-        # Promptni yuqori aniqlikdagi ultra-realistik 8K fotorealistik so'zlar bilan boyitish
+        # Promptni aniq obyektga yo'naltirish
         trans_res = await asyncio.to_thread(
             client.models.generate_content,
             model=MODEL_NAME,
             contents=(
-                f"You are a professional prompt engineer for Flux AI. Convert this user idea into an ultra-sharp, "
-                f"breathtaking, highly detailed, 8k resolution cinematic masterpiece prompt. "
-                f"Include lighting, textures, camera angle, and photorealistic detail. "
-                f"Return ONLY the final English prompt, no extra comments or explanation: {prompt_text}"
+                f"You are a master AI image prompter. The user wants to generate an image based on: '{prompt_text}'. "
+                f"Create a highly detailed, clear, and realistic English prompt focusing directly on the MAIN OBJECT "
+                f"(e.g., if spaceship, describe a crisp, massive, high-tech spaceship with engines and hull, not just clouds or background). "
+                f"Make sure the subject is the center focus, ultra-detailed, photorealistic, cinematic 8k render. "
+                f"Return ONLY the English prompt, nothing else."
             )
         )
         en_prompt = trans_res.text.strip().replace("\n", " ") if trans_res.text else prompt_text
-        # Maxsus yuqori tiniqlik kalit so'zlari
-        enhanced_prompt = f"{en_prompt}, ultra sharp, 8k resolution, highly detailed, photorealistic, masterpiece, high quality, cinematic lighting, crystal clear"
+        enhanced_prompt = f"A high quality clear detailed photograph of {en_prompt}, sharp focus, 8k resolution, cinematic lighting, masterpiece, hyperrealistic"
 
         encoded_prompt = urllib.parse.quote(enhanced_prompt)
-        # flux-realism / flux model va no-logo sozlamasi
         import time
         seed = int(time.time())
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=1280&model=flux-realism&seed={seed}&nologo=true&enhance=true"
+        # Modelni flux ga qo'yamiz (flux obyektlarni o'ta aniq va to'g'ri chizadi)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
 
         caption_text = f"✨ **Tavsif:** {prompt_text}\n💎 **Sifat:** Ultra HD (8K)\n👤 **Yaratuvchi:** Muslimbek"
         await message.answer_photo(photo=image_url, caption=caption_text, parse_mode="Markdown")
