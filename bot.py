@@ -66,17 +66,26 @@ def register_msg(user_id: int, message_id: int):
         user_messages[user_id] = []
     user_messages[user_id].append(message_id)
 
-async def clear_chat_history(chat_id: int, user_id: int):
-    # Oldingi suhbat xabarlarini Telegramdan o'chirish
+async def clear_chat_history(chat_id: int, current_message_id: int, user_id: int):
+    # Foydalanuvchining bot bilan yozishgan so'nggi 50 ta xabarini butunlay o'chirish (tozalash)
+    # Avval eslab qolingan xabarlarni o'chiramiz
     if user_id in user_messages and user_messages[user_id]:
-        msg_ids = list(user_messages[user_id])
-        user_messages[user_id] = []
-        for msg_id in msg_ids:
+        for msg_id in list(user_messages[user_id]):
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                await asyncio.sleep(0.02)
             except Exception:
                 pass
+        user_messages[user_id] = []
+
+    # So'nggi xabarlarni orqaga qarab tozalash (eski 'salom', 'qalaysan' va hamma xabarlar o'chishi uchun)
+    for offset in range(1, 40):
+        target_id = current_message_id - offset
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=target_id)
+            await asyncio.sleep(0.01)
+        except Exception:
+            # Xabar allaqachon o'chirilgan yoki topilmasa o'tkazib yuboramiz
+            pass
 
 def get_or_create_chat(user_id: int):
     if user_id not in user_chats:
@@ -152,8 +161,8 @@ async def cb_new(callback: types.CallbackQuery):
             "system_instruction": SYSTEM_INSTRUCTION
         }
     )
-    # Oldingi suhbat xabarlarini ekrandan tozalash
-    await clear_chat_history(callback.message.chat.id, callback.from_user.id)
+    # Oldingi barcha xabarlar va menyularni tozalash
+    await clear_chat_history(callback.message.chat.id, callback.message.message_id, callback.from_user.id)
     new_msg = await callback.message.answer("🔄 Yangi suhbat boshlandi. Avvalgi xabarlar tozalandi! Savolingizni beravering.")
     register_msg(callback.from_user.id, new_msg.message_id)
     await callback.answer()
@@ -252,11 +261,11 @@ async def reset_chat(message: types.Message):
             "system_instruction": SYSTEM_INSTRUCTION
         }
     )
-    # /new buyrug'ining o'zini ham o'chirish ro'yxatiga qo'shish
+    # /new buyrug'ining o'zini ham o'chirish
     register_msg(message.from_user.id, message.message_id)
-    # Oldingi barcha savol-javob xabarlarini ekrandan o'chirish
-    await clear_chat_history(message.chat.id, message.from_user.id)
-    new_msg = await message.answer("🔄 Yangi suhbat boshlandi. Avvalgi savol-javoblar tozalandi! Savolingizni yozing.", reply_markup=get_main_keyboard())
+    # Oldingi barcha savol-javoblar, eski menyular va xabarlarni tepasidan boshlab tozalash
+    await clear_chat_history(message.chat.id, message.message_id, message.from_user.id)
+    new_msg = await message.answer("🔄 Yangi suhbat boshlandi. Avvalgi barcha xabarlar va menyular tozalandi! Savolingizni yozing.", reply_markup=get_main_keyboard())
     register_msg(message.from_user.id, new_msg.message_id)
 
 # Admin paneli: Statistika (/stats)
