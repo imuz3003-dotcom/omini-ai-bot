@@ -1,0 +1,40 @@
+# Render Blueprint — omini AI Telegram boti (24/7 long polling + keep-alive).
+# Render'da "New +" → "Blueprint" bilan shu repozitoriyani tanlasangiz, servis
+# avtomatik yaratiladi. BOT_TOKEN va GEMINI_API_KEY sync: false — ular faqat
+# Render dashboard'dagi Environment Keys'ga kiritiladi (repositoriyada saqlanmaydi).
+
+services:
+  - type: web
+    name: omini-ai-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.4
+      - key: BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_ID
+        value: "8692018182"
+      - key: MODEL_NAME
+        value: gemini-3.5-flash-lite
+      - key: MODEL_LIST
+        value: gemini-3.5-flash-lite
+      - key: DAILY_LIMIT
+        value: "150"
+      - key: RATE_LIMIT_COUNT
+        value: "6"
+      - key: RATE_LIMIT_WINDOW
+        value: "30"
+      - key: TTS_LANGS
+        value: uz,tr
+      - key: LOG_FILE
+        value: ""
+      - key: DB_PATH
+        value: bot_data.db
