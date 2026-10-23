@@ -297,28 +297,30 @@ async def generate_ai_image(message: types.Message):
     wait_msg = await message.reply("🎨 Rasm chizilmoqda, iltimos kuting...")
 
     try:
-        # Promptni aniq obyektga yo'naltirish
+        # Foydalanuvchi so'zini to'g'ridan-to'g'ri va xatosiz tarjima qilish
         trans_res = await asyncio.to_thread(
             client.models.generate_content,
             model=MODEL_NAME,
             contents=(
-                f"You are a master AI image prompter. The user wants to generate an image based on: '{prompt_text}'. "
-                f"Create a highly detailed, clear, and realistic English prompt focusing directly on the MAIN OBJECT "
-                f"(e.g., if spaceship, describe a crisp, massive, high-tech spaceship with engines and hull, not just clouds or background). "
-                f"Make sure the subject is the center focus, ultra-detailed, photorealistic, cinematic 8k render. "
-                f"Return ONLY the English prompt, nothing else."
+                f"Translate the following Uzbek/Russian/English input into a concise, direct English image generation prompt. "
+                f"Be literal and accurate! For example:\n"
+                f"- 'kema' -> 'A majestic ship sailing on the sea'\n"
+                f"- 'samoviy kema' -> 'A futuristic sci-fi spaceship floating in outer space'\n"
+                f"- 'mashina' -> 'A modern sports car'\n"
+                f"- 'ot' -> 'A majestic running horse'\n\n"
+                f"Input: '{prompt_text}'\n"
+                f"Output ONLY the English prompt (no commentary, no quotes):"
             )
         )
-        en_prompt = trans_res.text.strip().replace("\n", " ") if trans_res.text else prompt_text
-        enhanced_prompt = f"A high quality clear detailed photograph of {en_prompt}, sharp focus, 8k resolution, cinematic lighting, masterpiece, hyperrealistic"
+        en_prompt = trans_res.text.strip().replace('"', '').replace("'", "").replace("\n", " ") if trans_res.text else prompt_text
+        enhanced_prompt = f"{en_prompt}, ultra-detailed, 8k resolution, high quality, photorealistic"
 
         encoded_prompt = urllib.parse.quote(enhanced_prompt)
         import time
         seed = int(time.time())
-        # Modelni flux ga qo'yamiz (flux obyektlarni o'ta aniq va to'g'ri chizadi)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&model=flux&seed={seed}&nologo=true"
 
-        caption_text = f"✨ **Tavsif:** {prompt_text}\n💎 **Sifat:** Ultra HD (8K)\n👤 **Yaratuvchi:** Muslimbek"
+        caption_text = f"✨ **Tavsif:** {prompt_text}\n💎 **Inglizcha prompt:** {en_prompt}\n👤 **Yaratuvchi:** Muslimbek"
         await message.answer_photo(photo=image_url, caption=caption_text, parse_mode="Markdown")
         await wait_msg.delete()
 
