@@ -92,8 +92,11 @@ def get_main_keyboard():
                 InlineKeyboardButton(text="🎨 Rasm chizish", callback_data="btn_image_help"),
             ],
             [
+                InlineKeyboardButton(text="🌐 Mening Loyihalarim", callback_data="btn_sites"),
                 InlineKeyboardButton(text="ℹ️ Bot imkoniyatlari", callback_data="btn_help"),
-                InlineKeyboardButton(text="👨‍💻 Dasturchi", callback_data="btn_creator"),
+            ],
+            [
+                InlineKeyboardButton(text="👨‍💻 Dasturchi (Muslimbek)", callback_data="btn_creator"),
             ]
         ]
     )
@@ -161,6 +164,54 @@ async def cb_help(callback: types.CallbackQuery):
     )
     await callback.message.answer(info_text, parse_mode="Markdown")
     await callback.answer()
+
+@dp.callback_query(F.data == "btn_sites")
+async def cb_sites(callback: types.CallbackQuery):
+    sites_text = (
+        "🌐 **Muslimbekning rasmiy saytlari va loyihalari:**\n\n"
+        "💻 **GitHub Profil:**\n"
+        "👉 [github.com/imuz3003-dotcom](https://github.com/imuz3003-dotcom)\n\n"
+        "🚀 **Asosiy loyihalar:**\n"
+        "• 🤖 **omini AI Bot** — Telegram sun'iy intellekt boti\n"
+        "• 🏦 **Digital Bank Landing Page** — Zamonaviy onlayn bank veb-sayti\n"
+        "• 🎮 **Cyberdrift** — Veb o'yin loyihasi\n"
+        "• 🏠 **3D House Project** — 3D interaktiv arxitektura loyihasi\n"
+        "• ⚡ **Chrome & Web Apps** — Foydali veb-ilova va kengaytmalar\n\n"
+        "Barcha loyihalar va kodlar bilan GitHub profilingizda tanishish mumkin!"
+    )
+    # Saytlarga to'g'ridan-to'g'ri o'tuvchi chiroyli tugmalar
+    sites_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 GitHub Profilga o'tish", url="https://github.com/imuz3003-dotcom")],
+            [InlineKeyboardButton(text="🏦 Digital Bank loyihasi", url="https://github.com/imuz3003-dotcom/digitalbank-landing-page-master")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="btn_back_main")]
+        ]
+    )
+    await callback.message.answer(sites_text, reply_markup=sites_kb, parse_mode="Markdown", disable_web_page_preview=True)
+    await callback.answer()
+
+@dp.callback_query(F.data == "btn_back_main")
+async def cb_back_main(callback: types.CallbackQuery):
+    await callback.message.answer("Asosiy menyu:", reply_markup=get_main_keyboard())
+    await callback.answer()
+
+@dp.message(Command("sites"))
+async def cmd_sites(message: types.Message):
+    sites_text = (
+        "🌐 **Muslimbekning loyihalari va saytlari:**\n\n"
+        "💻 **GitHub:** [github.com/imuz3003-dotcom](https://github.com/imuz3003-dotcom)\n\n"
+        "🚀 **Top loyihalar:**\n"
+        "• 🤖 **omini AI Bot** — Aqlli AI yordamchi\n"
+        "• 🏦 **Digital Bank** — Veb-sayt landing page\n"
+        "• 🎮 **Cyberdrift** — O'yin loyihasi\n"
+        "• 🏠 **3D House** — 3D modellashtirish loyihasi"
+    )
+    sites_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 GitHub Profilni ochish", url="https://github.com/imuz3003-dotcom")]
+        ]
+    )
+    await message.answer(sites_text, reply_markup=sites_kb, parse_mode="Markdown", disable_web_page_preview=True)
 
 @dp.callback_query(F.data == "btn_creator")
 async def cb_creator(callback: types.CallbackQuery):
