@@ -38,6 +38,7 @@ SYSTEM_INSTRUCTION = (
 )
 
 user_chats = {}
+user_messages = {}  # Foydalanuvchining o'chirilishi kerak bo'lgan xabarlari ID ro'yxati
 active_users = set()
 USERS_FILE = "users.json"
 
@@ -59,6 +60,23 @@ def track_user(user_id: int):
     if user_id not in active_users:
         active_users.add(user_id)
         save_users()
+
+def register_msg(user_id: int, message_id: int):
+    if user_id not in user_messages:
+        user_messages[user_id] = []
+    user_messages[user_id].append(message_id)
+
+async def clear_chat_history(chat_id: int, user_id: int):
+    # Oldingi suhbat xabarlarini Telegramdan o'chirish
+    if user_id in user_messages and user_messages[user_id]:
+        msg_ids = list(user_messages[user_id])
+        user_messages[user_id] = []
+        for msg_id in msg_ids:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                await asyncio.sleep(0.02)
+            except Exception:
+                pass
 
 def get_or_create_chat(user_id: int):
     if user_id not in user_chats:
@@ -134,7 +152,10 @@ async def cb_new(callback: types.CallbackQuery):
             "system_instruction": SYSTEM_INSTRUCTION
         }
     )
-    await callback.message.answer("🔄 Yangi suhbat boshlandi. Xotira tozalandi. Savolingizni beravering!")
+    # Oldingi suhbat xabarlarini ekrandan tozalash
+    await clear_chat_history(callback.message.chat.id, callback.from_user.id)
+    new_msg = await callback.message.answer("🔄 Yangi suhbat boshlandi. Avvalgi xabarlar tozalandi! Savolingizni beravering.")
+    register_msg(callback.from_user.id, new_msg.message_id)
     await callback.answer()
 
 @dp.callback_query(F.data == "btn_image_help")
@@ -231,7 +252,12 @@ async def reset_chat(message: types.Message):
             "system_instruction": SYSTEM_INSTRUCTION
         }
     )
-    await message.answer("🔄 Yangi suhbat boshlandi. Xotira tozalandi. Savolingizni yuboring!", reply_markup=get_main_keyboard())
+    # /new buyrug'ining o'zini ham o'chirish ro'yxatiga qo'shish
+    register_msg(message.from_user.id, message.message_id)
+    # Oldingi barcha savol-javob xabarlarini ekrandan o'chirish
+    await clear_chat_history(message.chat.id, message.from_user.id)
+    new_msg = await message.answer("🔄 Yangi suhbat boshlandi. Avvalgi savol-javoblar tozalandi! Savolingizni yozing.", reply_markup=get_main_keyboard())
+    register_msg(message.from_user.id, new_msg.message_id)
 
 # Admin paneli: Statistika (/stats)
 @dp.message(Command("stats"))
@@ -465,6 +491,7 @@ async def handle_photo(message: types.Message):
 @dp.message(F.text)
 async def ai_response_handler(message: types.Message):
     track_user(message.from_user.id)
+    register_msg(message.from_user.id, message.message_id)
     await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
 
     user_id = message.from_user.id
@@ -479,16 +506,19 @@ async def ai_response_handler(message: types.Message):
 
         if len(ai_reply) > 4000:
             for chunk in [ai_reply[i:i+4000] for i in range(0, len(ai_reply), 4000)]:
-                await message.answer(chunk)
+                sent_m = await message.answer(chunk)
+                register_msg(user_id, sent_m.message_id)
         else:
             try:
-                await message.answer(ai_reply, parse_mode="Markdown")
+                sent_m = await message.answer(ai_reply, parse_mode="Markdown")
             except Exception:
-                await message.answer(ai_reply)
+                sent_m = await message.answer(ai_reply)
+            register_msg(user_id, sent_m.message_id)
 
     except Exception as e:
         logging.error(f"Xatolik: {e}")
-        await message.answer(f"⚠️ Xatolik yuz berdi: {str(e)[:150]}")
+        err_m = await message.answer(f"⚠️ Xatolik yuz berdi: {str(e)[:150]}")
+        register_msg(user_id, err_m.message_id)
 
 # Render serveri uchun veb server
 async def handle_ping(request):
