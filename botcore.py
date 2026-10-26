@@ -104,7 +104,8 @@ class Store:
                 voice INTEGER DEFAULT 1,
                 search INTEGER DEFAULT 1,
                 prefs TEXT DEFAULT '{}',
-                banned INTEGER DEFAULT 0
+                banned INTEGER DEFAULT 0,
+                added_by INTEGER
             );
             CREATE TABLE IF NOT EXISTS messages(
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +131,17 @@ class Store:
             """
         )
         self._db.commit()
+        self._ensure_columns()
         self._migrate_legacy_users()
+
+    def _ensure_columns(self):
+        """Eski bazalarga yangi ustunlarni qo'shadi (SQLite CREATE TABLE IF NOT EXISTS yangilamaydi)."""
+        with self._lock:
+            existing = {r[1] for r in self._db.execute("PRAGMA table_info(users)").fetchall()}
+            for column in ("added_by",):
+                if column not in existing:
+                    self._db.execute(f"ALTER TABLE users ADD COLUMN {column} INTEGER")
+            self._db.commit()
 
     def _migrate_legacy_users(self):
         """Eski users.json faylidagi IDlarni bir marta bazaga ko'chiradi."""
@@ -159,11 +170,14 @@ class Store:
 
     def touch_user(self, user_id: int, username: str = None, first_name: str = None):
         now = time.time()
+        # COALESCE: ism/username kelmasa, eski qiymat o'chib qolmaydi
         self._write(
             """INSERT INTO users(id, username, first_name, created_at, last_seen)
                VALUES(?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
-                 username=excluded.username, first_name=excluded.first_name, last_seen=excluded.last_seen""",
+                 username=COALESCE(excluded.username, users.username),
+                 first_name=COALESCE(excluded.first_name, users.first_name),
+                 last_seen=excluded.last_seen""",
             (user_id, username, first_name, now, now),
         )
 
@@ -240,6 +254,36 @@ class Store:
     def all_users(self) -> list:
         with self._lock:
             return [r["id"] for r in self._db.execute("SELECT id FROM users").fetchall()]
+
+    def set_added_by(self, user_id: int, referrer_id: int):
+        self._write(
+            "UPDATE users SET added_by=? WHERE id=? AND added_by IS NULL", (referrer_id, user_id)
+        )
+
+    def total_requests(self, user_id: int) -> int:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COALESCE(SUM(count),0) AS c FROM usage WHERE user_id=? AND kind='ai'", (user_id,)
+            ).fetchone()
+        return row["c"]
+
+    def users_page(self, offset: int = 0, limit: int = 8, search: str = None) -> tuple:
+        """(jami_son, [qatorlar]) — ism/username/ID bo'yicha qidirish va sahifalash imkoniyati bilan."""
+        where, params = "", []
+        if search:
+            like = f"%{search.strip()}%"
+            where = "WHERE first_name LIKE ? OR username LIKE ? OR CAST(id AS TEXT) LIKE ?"
+            params = [like, like, like]
+        with self._lock:
+            total = self._db.execute(f"SELECT COUNT(*) AS c FROM users {where}", params).fetchone()["c"]
+            rows = self._db.execute(
+                f"""SELECT u.*, COALESCE(SUM(ug.count),0) AS requests
+                    FROM users u LEFT JOIN usage ug ON ug.user_id=u.id AND ug.kind='ai'
+                    {where}
+                    GROUP BY u.id ORDER BY u.last_seen DESC LIMIT ? OFFSET ?""",
+                params + [limit, offset],
+            ).fetchall()
+        return total, [dict(r) for r in rows]
 
     def today_total(self) -> int:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -372,7 +416,7 @@ def html_chunks(text: str, limit: int = CHUNK_LIMIT, hard_limit: int = 4000) -> 
 
 
 def strip_markdown(text: str) -> str:
-    """Markdown belilarini tushirib qoldiradi (TTS va zaxira javoblar uchun)."""
+    """Markdown va HTML belilarini tushiradi (TTS va zaxira javoblar uchun)."""
     text = re.sub(r"```", "", text)
     text = re.sub(r"`([^`]*)`", r"\1", text)
     text = re.sub(r"\*\*([^*]*)\*\*", r"\1", text)
@@ -380,6 +424,12 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r"(?<!\w)\*([^*]*)\*", r"\1", text)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    # HTML qatlamini ham to'lamiz: zaxira yo'lda teglar matn bo'lib ko'rinmasin
+    text = re.sub(r'<a href="([^"]*)">(.*?)</a>', r"\2 (\1)", text, flags=re.S)
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<[^>\n]{1,200}>", "", text)
+    for entity, char in (("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'"), ("&amp;", "&")):
+        text = text.replace(entity, char)
     return text.strip()
 
 

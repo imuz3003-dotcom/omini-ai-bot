@@ -7,6 +7,8 @@ import asyncio
 import io
 import logging
 import os
+import time
+import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -27,6 +29,8 @@ BOT_URL = "https://t.me/"
 
 pending_action: dict = {}
 last_image: dict = {}
+pending_dm: dict = {}
+panel_search: dict = {}
 
 ACTIONS = {
     "summarize": (
@@ -64,7 +68,7 @@ def btn(text: str, data: str = None, url: str = None):
 
 
 def command_link(command: str) -> str:
-    return f"{BOT_URL}?text={command}"
+    return f"{BOT_URL}?text={urllib.parse.quote(command)}"
 
 
 async def send_long(message, text: str, user_id: int, markup=None, sources=None):
@@ -339,6 +343,7 @@ HELP_TEXT = (
     "🌍 <b>Tarjima</b> — <code>/translate</code> bilan ishlaydi.\n"
     "🧠 <b>Rejimlar</b> — <code>/mode</code>: tarjimon, o'qituvchi, dasturchi, yozuvchi, matematikachi.\n"
     "📝 <b>Eslatmalar</b> — <code>/remember Ismim Muslimbek</code>, <code>/notes</code>, <code>/forget</code>.\n"
+    "👥 <b>Odam qo'shish</b> — <code>/add</code> deb yozing, keyin kontakt yuboring (yoki <code>/add 123456789</code>).\n"
     "🛑 <b>Bekor qilish</b> — <code>/stop</code> joriy javobni to'xtatadi.\n\n"
     "Boshqa buyruqlar: <code>/new</code> · <code>/settings</code> · <code>/model</code> · <code>/voice</code> · <code>/sites</code>"
 )
@@ -348,15 +353,23 @@ HELP_TEXT = (
 
 
 @dp.message(CommandStart())
-async def send_welcome(message: types.Message):
+async def send_welcome(message: types.Message, command: CommandObject = None):
     user_id = message.from_user.id
     core.store.touch_user(user_id, username=message.from_user.username, first_name=message.from_user.first_name)
     core.reset_session(user_id)
     ensure_session(user_id, fresh=True)
+    invited_by = ""
+    args = (command.args or "").strip() if command else ""
+    if args.startswith("ref") and args[3:].isdigit():
+        referrer_id = int(args[3:])
+        core.store.touch_user(referrer_id)
+        core.store.set_added_by(user_id, referrer_id)
+        invited_by = f"👥 Sizni <b>{core.escape_html(display_name(core.store.user(referrer_id)))}</b> taklif qildi.\n\n"
     name = core.escape_html(message.from_user.first_name or "foydalanuvchi")
     welcome = (
         f"Assalomu alaykum, <b>{name}</b> 👋\n\n"
-        "Men <b>omini AI</b> — universal aqlli yordamchiman. Muslimbek tomonidan yaratilgan. 🚀\n\n"
+        + invited_by
+        + "Men <b>omini AI</b> — universal aqlli yordamchiman. Muslimbek tomonidan yaratilgan. 🚀\n\n"
         "<b>Nima qila olaman:</b>\n"
         "• 💬 Xotirali suhbat va 🔎 real vaqt web-qidiruv\n"
         "• 🖼️ Rasm tahlili, 📄 PDF/TXT hujjat o'qish\n"
@@ -929,10 +942,247 @@ async def handle_photo(message: types.Message):
             core.inflight.pop(uid, None)
 
 
+# ----------------------------------------------------- kontakt va foydalanuvchilar paneli
+
+
+def ago(timestamp) -> str:
+    if not timestamp:
+        return "—"
+    delta = max(0, time.time() - timestamp)
+    if delta < 90:
+        return "hozir"
+    if delta < 3600:
+        return f"{int(delta // 60)} daqiqa oldin"
+    if delta < 86400:
+        return f"{int(delta // 3600)} soat oldin"
+    return f"{int(delta // 86400)} kun oldin"
+
+
+def display_name(user: dict) -> str:
+    return user.get("first_name") or (f"@{user['username']}" if user.get("username") else f"foydalanuvchi {user['id']}")
+
+
+def invite_link(referrer_id: int) -> str:
+    return f"{BOT_URL}?start=ref{referrer_id}"
+
+
+async def deliver(target_id: int, text: str) -> bool:
+    """Matnni (markdown→HTML) foydalanuvchining shaxsiy chatiga yuboradi."""
+    chunks = core.html_chunks(text)
+    try:
+        for chunk in chunks:
+            await bot.send_message(chat_id=target_id, text=chunk, parse_mode="HTML")
+        return True
+    except TelegramAPIError:
+        pass
+    try:
+        for chunk in chunks:
+            await bot.send_message(chat_id=target_id, text=core.strip_markdown(chunk)[:4000])
+        return True
+    except TelegramAPIError:
+        return False
+
+
+async def add_person(origin, target_id: int, referrer_id: int):
+    """Kontakt orqali qo'shilgan odamni bazaga yozadi va unga xush kelibsiz yuboradi."""
+    core.store.touch_user(target_id)
+    core.store.set_added_by(target_id, referrer_id)
+    referrer = core.store.user(referrer_id)
+    ref_name = display_name(referrer)
+    hello = (
+        f"Salom! 👋 Sizni **{ref_name}** ushbu botga taklif qildi.\n\n"
+        "Men **omini AI** — aqlli yordamchi. Savolingizni yozing, rasm/PDF/ovoz yuboring yoki "
+        "`/image` bilan rasm chizdiring.\n\n**/start** deb yozib, menyuni oching 👉"
+    )
+    delivered = await deliver(target_id, hello)
+    if delivered:
+        await notify(
+            origin,
+            f"✅ <code>{target_id}</code> ro'yxatga qo'shildi va unga xush kelibsiz xabari yuborildi.",
+        )
+    else:
+        await notify(
+            origin,
+            f"👤 <code>{target_id}</code> ro'yxatga qo'shildi, lekin u hali bot bilan suhbatlashmagan — "
+            f"xabar yetkazib bo'lmadi.\nUnga shu havolani yuboring: <a href=\"{invite_link(referrer_id)}\">Botni ochish</a>",
+        )
+
+
+@dp.message(Command("add"))
+async def cmd_add(message: types.Message, command: CommandObject):
+    if not await preflight(message):
+        return
+    arg = (command.args or "").strip().lstrip("@")
+    if arg.isdigit():
+        await add_person(message, int(arg), message.from_user.id)
+        return
+    pending_action[message.from_user.id] = ("add_contact", asyncio.get_running_loop().time() + 600)
+    await notify(
+        message,
+        "👤 Endi <b>kontakt</b> yuboring (xabar yozish maydonida 📎 → \"Kontakt\") — uni ro'yxatga qo'shaman.\n\n"
+        "Yoki to'g'ridan-to'g'ri ID bilan: <code>/add 123456789</code>",
+    )
+
+
+@dp.message(F.contact)
+async def handle_contact(message: types.Message):
+    if not await preflight(message):
+        return
+    uid = message.from_user.id
+    core.store.track_msg(uid, message.message_id)
+    contact = message.contact
+    name = " ".join(part for part in [contact.first_name, contact.last_name] if part) or "Noma'lum"
+    lines = [
+        "📇 <b>Yuborilgan kontakt</b>\n",
+        f"👤 Ism: <b>{core.escape_html(name)}</b>",
+        f"📞 Telefon: <code>{core.escape_html(contact.phone_number or '—')}</code>",
+    ]
+    if contact.user_id:
+        lines.append(f"🆔 Telegram ID: <code>{contact.user_id}</code>")
+        known = core.store.user(contact.user_id)
+        if known.get("username"):
+            lines.append(f"💬 Username: @{core.escape_html(known['username'])}")
+    else:
+        lines.append("🆔 Bu raqam Telegram'da ro'yxatdan o'tmagan (ID yo'q).")
+
+    kind = take_pending(uid)
+    if kind == "add_contact" and contact.user_id:
+        await notify(message, "\n".join(lines))
+        await add_person(message, contact.user_id, uid)
+        return
+    if kind == "add_contact":
+        await notify(message, "\n".join(lines) + "\n\n⚠️ ID yo'qligi uchun qo'shib bo'lmadi.")
+        return
+    await notify(message, "\n".join(lines) + "\n\nQo'shish uchun avval <code>/add</code> deb yozing, keyin kontakt yuboring.")
+
+
+def users_keyboard(rows: list, total: int, page: int) -> InlineKeyboardMarkup:
+    rows_kb = [[btn(f"✉️ {display_name(row)[:28]}", data=f"dm:{row['id']}")] for row in rows]
+    nav = []
+    if page > 0:
+        nav.append(btn("◀️ Oldingi", data=f"users:{page - 1}"))
+    if (page + 1) * 8 < total:
+        nav.append(btn("Keyingi ▶️", data=f"users:{page + 1}"))
+    if nav:
+        rows_kb.append(nav)
+    rows_kb.append([btn("🔎 Qidiruv", url=command_link("/find ")), btn("⬅️ Menyu", data="btn_back_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows_kb)
+
+
+def users_panel_text(rows: list, total: int, page: int, search: str) -> str:
+    header = f"👥 <b>Foydalanuvchilar: {total} ta</b>" + (f" · qidiruv: <code>{core.escape_html(search)}</code>" if search else "")
+    header += f" · sahifa {page + 1}\n\n"
+    if not rows:
+        return header + "Hech kim topilmadi."
+    lines = []
+    for index, row in enumerate(rows, start=page * 8 + 1):
+        flags = []
+        if row.get("banned"):
+            flags.append("⛔")
+        if row.get("added_by"):
+            flags.append("👥 taklif")
+        lines.append(
+            f"{index}. 👤 <b>{core.escape_html(display_name(row))}</b>"
+            + (f" @{core.escape_html(row['username'])}" if row.get("username") else "")
+            + f" · <code>{row['id']}</code>\n"
+            f"    🧠 {row.get('requests', 0)} so'rov · 🕒 {ago(row.get('last_seen'))}"
+            + (f" · {' '.join(flags)}" if flags else "")
+        )
+    return header + "\n".join(lines) + "\n\n✉️ tugmasi — o'sha odamga xabar yozish."
+
+
+async def show_users_panel(target, page: int = 0, search: str = None):
+    total, rows = core.store.users_page(offset=page * 8, limit=8, search=search)
+    uid = target.from_user.id
+    if search is not None:
+        panel_search[uid] = search
+    text = users_panel_text(rows, total, page, panel_search.get(uid))
+    keyboard = users_keyboard(rows, total, page)
+    try:
+        return await target.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except TelegramAPIError:
+        return await target.answer(core.strip_markdown(text)[:4000], reply_markup=keyboard)
+
+
+@dp.message(Command("users"))
+@dp.message(Command("contacts"))
+async def cmd_users(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await notify(message, "🔒 Bu panel faqat admin uchun.")
+        return
+    await show_users_panel(message)
+
+
+@dp.message(Command("find"))
+async def cmd_find(message: types.Message, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        await notify(message, "🔒 Qidiruv faqat admin uchun.")
+        return
+    term = (command.args or "").strip()
+    if not term:
+        await notify(message, "🔎 Namuna: <code>/find Ali</code> yoki <code>/find 869201818</code>")
+        return
+    await show_users_panel(message, 0, term)
+
+
+@dp.callback_query(F.data.startswith("users:"))
+async def cb_users_page(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Faqat admin", show_alert=True)
+        return
+    page = callback.data.split(":", 1)[1]
+    await show_users_panel(callback.message, int(page or 0))
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("dm:"))
+async def cb_dm(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Faqat admin", show_alert=True)
+        return
+    target = callback.data.split(":", 1)[1]
+    if not target.lstrip("-").isdigit():
+        await callback.answer("Noto'g'ri ID")
+        return
+    target_id = int(target)
+    pending_dm[callback.from_user.id] = target_id
+    core.store.touch_user(target_id)
+    name = display_name(core.store.user(target_id))
+    await callback.answer(f"✉️ {name}ga yozish: endi matn yuboring")
+    await notify(
+        callback.message,
+        f"✉️ <b>{core.escape_html(name)}</b> (<code>{target_id}</code>) ga xabar yozish rejimi.\n"
+        "Oddiy matn yuboring — jo'nataman. Bekor qilish: <code>/cancel</code>",
+    )
+
+
+@dp.message(Command("dm"))
+async def cmd_dm_direct(message: types.Message, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        await notify(message, "🔒 Faqat admin.")
+        return
+    parts = (command.args or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[0].lstrip("-").isdigit():
+        await notify(message, "Namuna: <code>/dm 123456789 Salom, yangi funksiya chiqdi!</code>")
+        return
+    target_id, text = int(parts[0]), parts[1]
+    ok = await deliver(target_id, text)
+    await notify(message, f"✅ Yetkazildi (<code>{target_id}</code>)" if ok else f"❌ <code>{target_id}</code> ga yuborib bo'lmadi — botni boshlamagan.")
+
+
+@dp.message(Command("cancel"))
+async def cmd_cancel(message: types.Message):
+    uid = message.from_user.id
+    cleared = pending_dm.pop(uid, None) is not None
+    pending_action.pop(uid, None)
+    core.store.track_msg(uid, message.message_id)
+    await notify(message, "🚫 Bekor qilindi. Oddiy suhbat rejimi." if cleared else "ℹ️ Bekor qilinadigan holat yo'q edi.")
+
+
 # ---------------------------------------------------------------------- matn suhbati
 
 
-@dp.message(F.sticker | F.video | F.video_note | F.animation | F.contact | F.location)
+@dp.message(F.sticker | F.video | F.video_note | F.animation | F.location)
 async def handle_unsupported_media(message: types.Message):
     if not await preflight(message):
         return
@@ -945,6 +1195,18 @@ async def handle_unsupported_media(message: types.Message):
 
 @dp.message(F.text)
 async def ai_chat(message: types.Message):
+    admin_target = pending_dm.get(message.from_user.id)
+    if admin_target and is_admin(message.from_user.id):
+        pending_dm.pop(message.from_user.id, None)
+        delivered = await deliver(admin_target, message.text)
+        target = core.store.user(admin_target)
+        status = "✅ Yetkazildi" if delivered else "❌ Yetkazib bo'lmadi (odam botni boshlamagan)"
+        await notify(
+            message,
+            f"{status}: <b>{core.escape_html(display_name(target))}</b> (<code>{admin_target}</code>)\n\n"
+            f"Yuborilgan xabar:\n<i>{core.escape_html(message.text[:300])}</i>",
+        )
+        return
     if message.text.startswith("/"):
         await notify(message, "🤔 Bunday buyruq yo'q. <code>/help</code> bilan ro'yxatni ko'ring.")
         return
@@ -1105,7 +1367,9 @@ async def admin_user(message: types.Message, command: CommandObject):
         f"Ism: {core.escape_html(user.get('first_name') or '—')}\n"
         f"Rejim: {user.get('persona')} · Model: {model_of(user)}\n"
         f"Ovoz: {user.get('voice')} · Qidiruv: {user.get('search')} · Ban: {user.get('banned')}\n"
-        f"Bugungi so'rov: {core.store.today_count(uid)}\n"
+        f"Keldi: {ago(user.get('created_at'))} · Oxirgi: {ago(user.get('last_seen'))}\n"
+        + (f"Taklif qildi: <code>{user.get('added_by')}</code>\n" if user.get("added_by") else "")
+        + f"Bugungi so'rov: {core.store.today_count(uid)} · Jami: {core.store.total_requests(uid)}\n"
         f"Suhbatda saqlangan xabar: {len(core.store.history(uid, 200))}"
     )
     await notify(message, text)
@@ -1114,10 +1378,15 @@ async def admin_user(message: types.Message, command: CommandObject):
 @dp.error()
 async def on_error(event):
     logging.exception("Noma'lum xato: %s", event.exception)
-    user = event.update.effective_user if event.update else None
-    if event.message and user and is_admin(user.id):
+    update = event.update
+    if update is None:
+        return True
+    query = update.callback_query
+    message = (query.message if query else None) or update.message or update.edited_message
+    user = (query.from_user if query else None) or (message.from_user if message else None)
+    if message and user and is_admin(user.id):
         try:
-            await notify(event.message, f"⚠️ Ichki xato: {str(event.exception)[:150]}")
+            await notify(message, f"⚠️ Ichki xato: {str(event.exception)[:150]}")
         except TelegramAPIError:
             pass
     return True
@@ -1141,6 +1410,8 @@ USER_COMMANDS = [
     ("settings", "Sozlamalar paneli"),
     ("remember", "Botga doimiy ma'lumot eslatish"),
     ("notes", "Eslatmalarimni ko'rish"),
+    ("add", "Kontakt yoki ID bilan odam qo'shish"),
+    ("cancel", "Joriy rejimni bekor qilish"),
     ("stop", "Joriy javobni bekor qilish"),
     ("sites", "Dasturchi loyihalari"),
 ]
@@ -1158,7 +1429,10 @@ async def setup_menus():
             types.BotCommand(command="broadcast", description="Barchaga xabar yuborish"),
             types.BotCommand(command="ban", description="Foydalanuvchini bloklash"),
             types.BotCommand(command="unban", description="Blokdan chiqarish"),
-            types.BotCommand(command="user", description="Foydalanuvchini ko'rish"),
+            types.BotCommand(command="user", description="Bitta foydalanuvchini ko'rish"),
+            types.BotCommand(command="users", description="Foydalanuvchilar paneli (ism bilan)"),
+            types.BotCommand(command="find", description="Ism/username/ID bo'yicha qidirish"),
+            types.BotCommand(command="dm", description="Muayyan odamga xabar yuborish"),
         ],
         scope=types.BotCommandScopeChat(chat_id=ADMIN_ID),
     )

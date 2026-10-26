@@ -2,6 +2,15 @@
 # Render'da "New +" → "Blueprint" bilan shu repozitoriyani tanlasangiz, servis
 # avtomatik yaratiladi. BOT_TOKEN va GEMINI_API_KEY sync: false — ular faqat
 # Render dashboard'dagi Environment Keys'ga kiritiladi (repositoriyada saqlanmaydi).
+#
+# DIQQAT — xotira (SQLite) haqida: free (bepul) planda Persistent Disk yo'q,
+# shuning uchun bot_data.db qayta deploy yoki restart'da o'chadi (xotira, odamlar
+# ro'yxati va kontaktlar nolga qaytadi). Doimiy xotira kerak bo'lsa: plan: starter
+# qiling va quyidagi qatorlarni oching (disk $7/oylik rejada mavjud):
+#   disks:
+#     - name: omini-data
+#       mountPath: /var/data
+# so'ng DB_PATH qiymatini /var/data/bot_data.db qilib o'zgartiring.
 
 services:
   - type: web
