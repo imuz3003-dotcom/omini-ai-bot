@@ -31,6 +31,7 @@ pending_action: dict = {}
 last_image: dict = {}
 pending_dm: dict = {}
 panel_search: dict = {}
+pending_edit: dict = {}
 
 ACTIONS = {
     "summarize": (
@@ -339,6 +340,7 @@ HELP_TEXT = (
     "🖼️ <b>Vision</b> — rasm yuboring, tahlil qilib beraman.\n"
     "📄 <b>Hujjat</b> — PDF, TXT, kod fayllarini o'qiyman.\n"
     "🎨 <b>Rasm chizish</b> — <code>/image mashina --ar 16:9</code> (variantlar: 1:1, 16:9, 9:16, 4:3, 3:2).\n"
+    "🪄 <b>Rasm tahrirlash</b> — rasmga javob qilib <code>/edit fonni tog'ga o'zgartir</code> (Gemini rasm modeli bilan).\n"
     "📗 <b>Xulosa</b> — <code>/summarize</code> keyin fayl yoki matn yuboring.\n"
     "🌍 <b>Tarjima</b> — <code>/translate</code> bilan ishlaydi.\n"
     "🧠 <b>Rejimlar</b> — <code>/mode</code>: tarjimon, o'qituvchi, dasturchi, yozuvchi, matematikachi.\n"
@@ -688,7 +690,9 @@ async def generate_ai_image(message: types.Message, command: CommandObject):
             "<code>/image kosmosda uchayotgan sport avtomobili</code>\n"
             "<code>/image tog'lar bag'ridagi uy --ar 16:9</code>\n"
             "<code>/image neon robot --model turbo --seed 7</code>\n\n"
-            "Bayroqlar: <code>--ar 1:1|16:9|9:16|4:3|3:4|3:2|2:3</code>, <code>--model flux|turbo</code>, <code>--seed &lt;son&gt;</code>",
+            "Bayroqlar: <code>--ar 1:1|16:9|9:16|4:3|3:4|3:2|2:3</code>, <code>--model flux|turbo</code>, <code>--seed &lt;son&gt;</code>\n"
+            "Rasm avval <b>Gemini</b> rasm modelida chiziladi (sifat yuqori); mavjud bo'lmasa bepul "
+            "<b>pollinations</b>ga o'tadi — <code>--model</code> va <code>--seed</code> o'shanda ishlaydi.",
         )
         return
     core.inflight[message.from_user.id] = asyncio.current_task()
@@ -705,31 +709,55 @@ async def generate_ai_image(message: types.Message, command: CommandObject):
             core.inflight.pop(message.from_user.id, None)
 
 
-async def draw_image(message, wait, prompt, options):
-    user = core.store.user(message.from_user.id)
+async def make_image(uid: int, prompt: str, options: dict, refs: list = None) -> tuple:
+    """Avval Gemini rasm modelini urinadi, bo'lmasa bepul pollinations'ga o'tadi."""
+    if core.image_gemini_ready():
+        try:
+            return await asyncio.to_thread(core.generate_image_gemini, prompt, options.get("aspect"), refs)
+        except core.ImageQuotaError as error:
+            core.block_gemini_images()
+            logging.warning("Gemini rasm modeli o'chirildi: %s", error)
+            if refs:
+                raise RuntimeError(
+                    "Rasmni tahrirlash faqat Gemini'da ishlaydi, lekin kalitingizda rasm kvotasi yo'q. "
+                    "Gemini billing'ini yoqsangiz — /edit darhol ishlaydi."
+                )
+        except Exception as error:
+            logging.warning("Gemini rasm xatosi: %s", error)
+            if refs:
+                raise RuntimeError(f"Rasmni tahrirlab bo'lmadi: {str(error)[:140]}")
+    if refs:
+        raise RuntimeError("Rasm tahrirlash uchun Gemini rasm modeli kerak (hozircha mavjud emas).")
+    user = core.store.user(uid)
     english = await asyncio.to_thread(core.translate_prompt_to_english, prompt, model_of(user))
-    url = core.pollinations_url(english, options)
-    data = await core.download_image(url)
+    data = await core.download_image(core.pollinations_url(english, options))
+    return data, "image/png", f"pollinations · {options.get('model', 'flux')}"
+
+
+async def draw_image(message, wait, prompt, options, refs: list = None, label: str = "✨"):
+    uid = message.from_user.id
+    data, mime, provider = await make_image(uid, prompt, options, refs)
+    filename = "omini_ai." + ("jpg" if "jpeg" in mime else "png")
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[[btn("🔁 Boshqa variant", data="btn_regen"), btn("⬅️ Menyu", data="btn_back_main")]]
     )
     caption = (
-        f"✨ {core.escape_html(prompt)}\n"
-        f"🇬🇧 {core.escape_html(english)}\n"
-        f"📐 {options['aspect']} · {options['model']}"
-        + (f" · seed {options['seed']}" if options.get("seed") else "")
+        f"{label} {core.escape_html(prompt)}\n"
+        f"🤖 {core.escape_html(provider)}"
+        + (f" · 📐 {options['aspect']}" if options.get("aspect") else "")
+        + (f" · seed {options['seed']}" if options.get("seed") and "pollinations" in provider else "")
         + "\n👤 Muslimbek"
     )
     if message.chat.type == "private":
-        await message.answer_photo(photo=BufferedInputFile(data, filename="omini_ai.png"), caption=caption, reply_markup=keyboard, parse_mode="HTML")
+        await message.answer_photo(photo=BufferedInputFile(data, filename=filename), caption=caption, reply_markup=keyboard, parse_mode="HTML")
         await wait.delete()
     else:
         sent = await message.reply_photo(
-            photo=BufferedInputFile(data, filename="omini_ai.png"), caption=caption, reply_markup=keyboard, parse_mode="HTML"
+            photo=BufferedInputFile(data, filename=filename), caption=caption, reply_markup=keyboard, parse_mode="HTML"
         )
-        core.store.track_msg(message.from_user.id, sent.message_id)
+        core.store.track_msg(uid, sent.message_id)
         await safe_edit(wait, "✅ Rasm tayyor!")
-    core.store.bump(message.from_user.id, "img")
+    core.store.bump(uid, "img")
 
 
 @dp.callback_query(F.data == "btn_regen")
@@ -738,19 +766,82 @@ async def cb_regen(callback: types.CallbackQuery):
     if not entry:
         await callback.answer("Avval /image buyrug'i bilan rasm so'rang", show_alert=True)
         return
-    prompt, options = core.parse_image_request(entry["prompt"])
-    options["seed"] = None
+    refs = entry.get("refs")
+    if refs:
+        prompt, options = entry["prompt"], dict(entry["options"])
+    else:
+        prompt, options = core.parse_image_request(entry["prompt"])
+        options["seed"] = None
     await callback.answer("🎨 Yangi variant chizilmoqda...")
     core.inflight[callback.from_user.id] = asyncio.current_task()
     async with keep_typing(callback.message.chat.id, ChatAction.UPLOAD_PHOTO):
         wait = await callback.message.reply("🎨 Qayta chizilmoqda...")
         try:
-            await draw_image(callback.message, wait, prompt, options)
+            await draw_image(callback.message, wait, prompt, options, refs=refs, label="🪄" if refs else "✨")
         except Exception as error:
             logging.error("Rasm qayta yaratishda xato: %s", error)
             await safe_edit(wait, f"⚠️ {str(error)[:150]}")
         finally:
             core.inflight.pop(callback.from_user.id, None)
+
+
+async def pick_photo(message: types.Message):
+    """Xabarding o'zidagi yoki javob berilgan xabardagi rasm baytlarini oladi."""
+    photo = message.photo[-1] if message.photo else None
+    replied = message.reply_to_message
+    if photo is None and replied is not None and getattr(replied, "photo", None):
+        photo = replied.photo[-1]
+    if photo is None:
+        return None
+    return await download_tg_file(photo)
+
+
+async def run_edit(message, instruction: str, data: bytes):
+    """Berilgan rasmni matn bo'yicha tahrirlab yuboradi."""
+    uid = message.from_user.id
+    options = {"aspect": None, "model": "gemini", "seed": None}
+    core.inflight[uid] = asyncio.current_task()
+    async with keep_typing(message.chat.id, ChatAction.UPLOAD_PHOTO):
+        wait = await message.reply("🪄 Rasm tahrirlanmoqda (20-60 soniya)...")
+        try:
+            await draw_image(message, wait, instruction, options, refs=[(data, "image/jpeg")], label="🪄")
+            last_image[uid] = {"prompt": instruction, "options": options, "refs": [(data, "image/jpeg")]}
+        except Exception as error:
+            logging.error("Rasm tahririda xato: %s", error)
+            await safe_edit(wait, f"⚠️ {str(error)[:180]}")
+        finally:
+            core.inflight.pop(uid, None)
+
+
+@dp.message(Command("edit"))
+async def cmd_edit(message: types.Message, command: CommandObject):
+    if not await preflight(message):
+        return
+    uid = message.from_user.id
+    instruction = (command.args or message.caption or "").strip()
+    if not instruction:
+        await notify(
+            message,
+            "🪄 Rasmni qanday o'zgartirishni yozing.\n\n"
+            "Misollar:\n"
+            "<code>/edit fonni quyoshli plyajga o'zgartir</code>\n"
+            "<code>/edit ustiga shapka qo'y, uslubini akvarel qil</code>\n\n"
+            "Bot rasmi yoki o'z rasmingizga javob qilib yozing, yoki <code>/edit</code> deb yozib, "
+            "keyin rasm yuboring.",
+        )
+        return
+    core.store.track_msg(uid, message.message_id)
+    try:
+        data = await pick_photo(message)
+    except Exception as error:
+        await notify(message, f"⚠️ Rasmni yuklab bo'lmadi: {str(error)[:120]}")
+        return
+    if data is None:
+        pending_action[uid] = ("edit_image", asyncio.get_running_loop().time() + 600)
+        pending_edit[uid] = instruction
+        await notify(message, f"📎 Endi <b>rasm</b> yuboring — <i>{core.escape_html(instruction[:120])}</i> bo'yicha tahrirlayman.\n\nBekor qilish: <code>/cancel</code>")
+        return
+    await run_edit(message, instruction, data)
 
 
 async def safe_edit(message_to_edit, text: str):
@@ -908,6 +999,18 @@ async def handle_photo(message: types.Message):
     uid = message.from_user.id
     core.store.track_msg(uid, message.message_id)
     kind = take_pending(uid)
+    if kind == "edit_image":
+        instruction = pending_edit.pop(uid, None) or (message.caption or "").strip()
+        if not instruction:
+            await notify(message, "🪄 Bu rasmni qanday o'zgartirishni ham yozing: <code>/edit fonni almashtir</code>")
+            return
+        try:
+            data = await download_tg_file(message.photo[-1])
+        except Exception as error:
+            await notify(message, f"⚠️ Rasmni yuklab bo'lmadi: {str(error)[:120]}")
+            return
+        await run_edit(message, instruction, data)
+        return
     label, template = ACTIONS.get(kind, ("🖼️ Rasm tahlili", "Ushbu rasmda nima tasvirlangan? Batafsil va aniq tushuntiring."))
     instruction = message.caption or template.format(typ="rasm")
 
@@ -1175,6 +1278,7 @@ async def cmd_cancel(message: types.Message):
     uid = message.from_user.id
     cleared = pending_dm.pop(uid, None) is not None
     pending_action.pop(uid, None)
+    pending_edit.pop(uid, None)
     core.store.track_msg(uid, message.message_id)
     await notify(message, "🚫 Bekor qilindi. Oddiy suhbat rejimi." if cleared else "ℹ️ Bekor qilinadigan holat yo'q edi.")
 
@@ -1401,6 +1505,7 @@ USER_COMMANDS = [
     ("help", "Barcha imkoniyatlar va buyruqlar"),
     ("new", "Suhbatni va xabarlarni tozalash"),
     ("image", "AI rasm chizish: /image matn --ar 16:9"),
+    ("edit", "Rasmni matn bilan tahrirlash: /edit fonni almashtir"),
     ("summarize", "Fayl yoki matnning xulossasi"),
     ("translate", "Fayl, rasm yoki matnni tarjima qilish"),
     ("mode", "Javob rejimini tanlash"),

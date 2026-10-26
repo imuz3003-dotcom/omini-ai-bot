@@ -757,6 +757,85 @@ async def download_image(url: str, attempts: int = 3) -> bytes:
     raise RuntimeError(f"Rasmni yuklab bo'lmadi: {last_error}")
 
 
+# ------------------------------------------------------------ Gemini orqali rasm
+
+
+class ImageQuotaError(RuntimeError):
+    """Gemini rasm modeli kvota/to'lov yoki modelga ruxsat masalasi — pollinations'ga o'tamiz."""
+
+
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-3.1-flash-image")
+IMAGE_MODEL_FALLBACK = os.getenv("IMAGE_MODEL_FALLBACK", "gemini-2.5-flash-image")
+IMAGE_PROVIDER = (os.getenv("IMAGE_PROVIDER", "auto") or "auto").lower()
+GEMINI_IMAGE_SIZES = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+
+_image_blocked_until = 0.0
+
+
+def image_gemini_ready() -> bool:
+    """Gemini rasmini sinab ko'rish mumkinmi (provider va kvota holatiga qarab)."""
+    return IMAGE_PROVIDER in ("auto", "gemini") and time.time() >= _image_blocked_until
+
+
+def block_gemini_images(hours: float = 6.0):
+    """Gemini rasmi ishlamasa, bir necha soatga bepul pollinations rejimiga o'tamiz."""
+    global _image_blocked_until
+    _image_blocked_until = time.time() + hours * 3600
+    logging.warning("Gemini rasm modeli %s soatga o'chirildi (pollinations ishlatiladi).", hours)
+
+
+def extract_image_part(response) -> tuple:
+    """Javobdagi birinchi rasm (bayt, mime) ni oladi; bo'lmasa (None, None)."""
+    for candidate in getattr(response, "candidates", None) or []:
+        parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+        for part in parts:
+            blob = getattr(part, "inline_data", None)
+            if blob is not None and getattr(blob, "data", None):
+                return blob.data, (getattr(blob, "mime_type", None) or "image/png")
+    return None, None
+
+
+def generate_image_gemini(prompt: str, aspect: str = None, refs: list = None):
+    """Gemini rasm modeli: matndan rasm yoki (refs bilan) rasmni tahrirlaydi.
+
+    Qaytaradi: (baytlar, mime, ishlatilgan model).
+    """
+    contents = []
+    for ref in refs or []:
+        data, mime = ref if isinstance(ref, (tuple, list)) else (ref, "image/png")
+        contents.append(genai_types.Part.from_bytes(data=data, mime_type=mime))
+    contents.append(prompt)
+
+    config_kwargs = {}
+    if aspect and aspect in GEMINI_IMAGE_SIZES and hasattr(genai_types, "ImageConfig"):
+        config_kwargs["image_config"] = genai_types.ImageConfig(aspect_ratio=aspect)
+    config = genai_types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+
+    models = [IMAGE_MODEL]
+    if IMAGE_MODEL_FALLBACK and IMAGE_MODEL_FALLBACK != IMAGE_MODEL:
+        models.append(IMAGE_MODEL_FALLBACK)
+
+    last_error = None
+    for name in models:
+        try:
+            response = client.models.generate_content(model=name, contents=contents, config=config)
+        except Exception as error:
+            text = str(error)
+            lowered = text.lower()
+            if "429" in text or "resource_exhausted" in lowered or "quota" in lowered or "billing" in lowered:
+                raise ImageQuotaError(f"{name}: kvota tugagan (billing ulanganda ishlaydi)") from error
+            if "404" in text or "not_found" in lowered or "no longer available" in lowered:
+                last_error = error
+                continue
+            raise
+        data, mime = extract_image_part(response)
+        if not data:
+            blocked = getattr(response, "prompt_feedback", None)
+            raise RuntimeError(f"{name} javobda rasm bermadi{'' if not blocked else ': ' + str(blocked)[:120]}")
+        return data, mime, name
+    raise ImageQuotaError(f"{models[0]} rasm uchun mavjud emas: {str(last_error)[:120]}")
+
+
 # ------------------------------------------------------- limit va holat boshqaruvi
 
 

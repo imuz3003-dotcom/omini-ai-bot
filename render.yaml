@@ -43,6 +43,12 @@ services:
         value: "30"
       - key: TTS_LANGS
         value: uz,tr
+      - key: IMAGE_PROVIDER
+        value: auto
+      - key: IMAGE_MODEL
+        value: gemini-3.1-flash-image
+      - key: IMAGE_MODEL_FALLBACK
+        value: gemini-2.5-flash-image
       - key: LOG_FILE
         value: ""
       - key: DB_PATH
