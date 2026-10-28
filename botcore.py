@@ -45,6 +45,11 @@ DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "150"))
 TG_MSG_LIMIT = 4096
 CHUNK_LIMIT = 3600
 
+# So'kinish moderasiyasi: "off" — o'chirilgan, "warn" — faqat ogohlantirish, "block" — ogohlantirib, keyin bloklash
+PROFANITY_MODE = (os.getenv("PROFANITY_MODE", "block") or "block").lower()
+PROFANITY_BLOCK_AFTER = max(1, int(os.getenv("PROFANITY_BLOCK_AFTER", "2")))
+PROFANITY_BAN_HOURS = max(1, int(os.getenv("PROFANITY_BAN_HOURS", "24")))
+
 if not BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("BOT_TOKEN yoki GEMINI_API_KEY topilmadi! .env faylini tekshiring.")
 
@@ -138,9 +143,13 @@ class Store:
         """Eski bazalarga yangi ustunlarni qo'shadi (SQLite CREATE TABLE IF NOT EXISTS yangilamaydi)."""
         with self._lock:
             existing = {r[1] for r in self._db.execute("PRAGMA table_info(users)").fetchall()}
-            for column in ("added_by",):
+            for column, sql_type in (
+                ("added_by", "INTEGER"),
+                ("ban_expires", "REAL"),
+                ("strikes", "INTEGER DEFAULT 0"),
+            ):
                 if column not in existing:
-                    self._db.execute(f"ALTER TABLE users ADD COLUMN {column} INTEGER")
+                    self._db.execute(f"ALTER TABLE users ADD COLUMN {column} {sql_type}")
             self._db.commit()
 
     def _migrate_legacy_users(self):
@@ -249,7 +258,49 @@ class Store:
         )
 
     def is_banned(self, user_id: int) -> bool:
-        return bool(self.user(user_id).get("banned"))
+        """Vaqtinchalik ban muddati o'tgan bo'lsa, uni avtomatik ochadi."""
+        row = self.user(user_id)
+        if not row.get("banned"):
+            return False
+        expires = row.get("ban_expires")
+        if expires and time.time() >= expires:
+            self.unban(user_id)
+            return False
+        return True
+
+    def ban_expire_at(self, user_id: int):
+        row = self.user(user_id)
+        return row.get("ban_expires") if row.get("banned") else None
+
+    def ban_user(self, user_id: int, hours: float = None):
+        """hours=None — doimiy ban; aks holda shuncha soatdan keyin avtomatik ochiladi."""
+        self.touch_user(user_id)
+        expires = time.time() + hours * 3600 if hours else None
+        self._write(
+            "UPDATE users SET banned=1, ban_expires=?, last_seen=? WHERE id=?",
+            (expires, time.time(), user_id),
+        )
+        return expires
+
+    def unban(self, user_id: int):
+        self.touch_user(user_id)
+        self._write("UPDATE users SET banned=0, ban_expires=NULL, strikes=0 WHERE id=?", (user_id,))
+
+    def record_strike(self, user_id: int) -> int:
+        """Haqorat uchun zarb sonini bittaga ko'paytirib, yangi qiymatni qaytaradi."""
+        self.touch_user(user_id)
+        self._write(
+            "UPDATE users SET strikes=COALESCE(strikes,0)+1, last_seen=? WHERE id=?",
+            (time.time(), user_id),
+        )
+        return int(self.user(user_id).get("strikes") or 0)
+
+    def strikes(self, user_id: int) -> int:
+        return int(self.user(user_id).get("strikes") or 0)
+
+    def reset_strikes(self, user_id: int):
+        self.touch_user(user_id)
+        self._write("UPDATE users SET strikes=0 WHERE id=?", (user_id,))
 
     def all_users(self) -> list:
         with self._lock:
@@ -323,6 +374,79 @@ class Store:
 
 
 store = Store(DB_PATH)
+
+
+# ------------------------------------------------------- so'kinish (moderatsiya)
+
+_CYR = "[а-яё]"
+_EXTRA_WORDS = os.getenv("PROFANITY_WORDS", "")
+
+# Stemlar so'z chegarasi bilan tekshiriladi: "erlan lan" -> ikkinchisi mos keladi,
+# "Erlan" va "classes" esa mos kelmaydi (nomlar, oddiy so'zlar bloklanmasligi kerak).
+# Uzun aniq so'kinish stemlari (fuck/shit/бля) so'z ichida ham izlanadi (motherfucker, похуйстоте),
+# qisqa va xavfli stemlarga faqat \b chegarasi bilan ruxsat beriladi.
+PROFANITY_PATTERNS = [
+    # inglizcha
+    r"(?:fuck\w*|mother\s?fuck\w*|shit\w*|bull\s?shit|bitch\w*"
+    r"|\bass\s?hole|\bass(es)?\b|\bdipshit|\bwtf\b|\btwat\b|\bprick\b|\bwhore\b"
+    r"|\bslut\b|\bpussy\b|\bdick\w*|\bcock\s?hole|\bcunt\w*|n[iy]gg[ae]r?s?\b|\bbastard\b)",
+    # ruscha / kirill so'kinish so'zlari
+    r"(?:" + "|".join([
+        r"(?<![нлр])[её]б" + _CYR + r"{0,8}",
+        r"ху[йяёиe]" + _CYR + r"{0,6}",
+        r"п[иы]зд" + _CYR + r"{0,6}",
+        r"бля" + _CYR + r"{0,6}",
+        r"муд[ао]к" + _CYR + r"{0,4}",
+        r"шлю" + _CYR + r"{0,6}",
+        r"гандо" + _CYR + r"{0,4}",
+        r"п[еиa]д[оа]р" + _CYR + r"{0,5}",
+        r"мраз" + _CYR + r"{0,4}",
+        r"(?:говн|гавн|сволот|ублюд|сука|сучар|придур|уродин)[а-яё]*",
+    ]) + r")",
+    # o'zbekcha (lotin + kirill) — aniq so'kinish so'zlari, so'z chegarasi bilan
+    r"(?:\blan\b|(?<![а-я])лан(?![а-я])|(?<![a-z])lak{1,2}i?(?![a-z])|(?<![а-я])лакк[а-яё]{0,3}"
+    r"|(?<![a-z])(?:x|h)?u\s?(?:w|v|y|й)?\s?[аaоo]\s?[qgк]'?"
+    r"|(?<![а-я])(?:х|к)?у\s?(?:в|й|y)?\s?[яеаoy]\s?[кқq]|(?<![а-я])ув[оаaя][аo]?[кқq]"
+    r"|пизд|p[iy]zd|(?<![а-я])(?:бузур|пузур|н?елат)(?![а-я])|(?<![a-z])n?elat\b|bu[зz][уu]r"
+    r"|(?<![a-z])suk[аa](?:k|')?|\bsuk[aq]\b"
+    r"|(?<![a-z])pishi\b|\bso'ak?\b)",
+]
+
+
+def _profanity_view(text: str) -> str:
+    """Matnni solishtirishga tayyorlaydi: kichik harf, takrorlangan harflar va leet-almashtirishlar."""
+    value = (text or "").lower().replace("ё", "е")
+    value = re.sub(r"[’‘`ʼʻ]", "'", value)
+    value = re.sub(r"[^\w']+", " ", value).replace("_", " ")  # o'zbekcha q, g', u' ham saqlanadi
+    value = re.sub(r"(.)\1{2,}", r"\1\1", value)
+    value = value.replace("0", "o").replace("1", "i").replace("3", "e")
+    value = value.replace("4", "a").replace("5", "s").replace("7", "t").replace("@", "a")
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _compile_profanity() -> list:
+    patterns = list(PROFANITY_PATTERNS)
+    extra = [w.strip().lower() for w in _EXTRA_WORDS.split(",") if w.strip()]
+    if extra:
+        patterns.append(r"(?:" + "|".join(re.escape(w) for w in extra) + r")")
+    return [re.compile(p, flags=re.IGNORECASE | re.UNICODE) for p in patterns]
+
+
+PROFANITY_RE = _compile_profanity()
+
+
+def contains_profanity(text: str) -> tuple:
+    """(bor_mi, topilgan_so'z) — matnda haqorat yoki so'kinish borligini tekshiradi."""
+    if not text:
+        return False, None
+    for view in {text, _profanity_view(text)}:
+        if not view:
+            continue
+        for pattern in PROFANITY_RE:
+            match = pattern.search(view)
+            if match:
+                return True, match.group(0).strip()
+    return False, None
 
 
 # --------------------------------------------------------------------- formatlash
@@ -891,6 +1015,17 @@ def reset_session(user_id: int):
 
 def human_wait(seconds: float) -> str:
     return f"{int(seconds) + 1}" if seconds < 60 else f"{round(seconds / 60, 1)} daqiqa"
+
+
+def human_span(seconds: float) -> str:
+    """Sekundni '3 soat 12 daqiqa' ko'rinishida qaytaradi."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} soniya"
+    minutes, hours = seconds // 60 % 60, seconds // 3600
+    if not hours:
+        return f"{minutes} daqiqa"
+    return f"{hours} soat {minutes} daqiqa" if minutes else f"{hours} soat"
 
 
 def setup_logging():

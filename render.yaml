@@ -41,6 +41,12 @@ services:
         value: "6"
       - key: RATE_LIMIT_WINDOW
         value: "30"
+      - key: PROFANITY_MODE
+        value: block
+      - key: PROFANITY_BLOCK_AFTER
+        value: "2"
+      - key: PROFANITY_BAN_HOURS
+        value: "24"
       - key: TTS_LANGS
         value: uz,tr
       - key: IMAGE_PROVIDER

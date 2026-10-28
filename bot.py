@@ -237,8 +237,64 @@ async def wipe_messages(chat_id: int, user_id: int, around_message_id: int = Non
         core.store.set_pref(user_id, "legacy_swept", True)
 
 
+async def alert_admin(text: str, markup=None):
+    """Adminga xavotir yuboradi (bot bilan suhbatlasha olmasa, jim o'tkazib yuboradi)."""
+    try:
+        await bot.send_message(chat_id=ADMIN_ID, text=text[:4000], parse_mode="HTML", reply_markup=markup)
+    except TelegramAPIError:
+        pass
+
+
+def moderation_needed(message) -> bool:
+    """Haqorat tekshuvi qachon ishlaydi: buyruqlar va tarjimadagi matn tekshirilmaydi."""
+    text = message.text or message.caption or ""
+    if not text or text.startswith("/"):
+        return False
+    action = pending_action.get(message.from_user.id, (None,))[0]
+    return action not in ("translate", "summarize")
+
+
+async def check_profanity(message) -> bool:
+    """Birinchi marta ogohlantiradi, takirlansa 24 soatlik vaqtinchalik blok qo'yadi."""
+    text = message.text or message.caption or ""
+    hit, term = core.contains_profanity(text)
+    if not hit or core.PROFANITY_MODE == "off":
+        return True
+    uid = message.from_user.id
+    strikes = core.store.record_strike(uid)
+    if core.PROFANITY_MODE == "warn" or strikes < core.PROFANITY_BLOCK_AFTER:
+        left = core.PROFANITY_BLOCK_AFTER - strikes
+        await notify(
+            message,
+            "⚠️ Iltimos, e'tiborli bo'ling — haqoratli so'z ishlatdingiz.\n"
+            f"Yana {left} marta takirlansa, botdan {core.PROFANITY_BAN_HOURS} soatga vaqtinchalik cheklanasiz.",
+        )
+        return False
+    expires = core.store.ban_user(uid, hours=core.PROFANITY_BAN_HOURS)
+    core.reset_session(uid)
+    until = datetime.fromtimestamp(expires, timezone.utc).astimezone().strftime("%d.%m, %H:%M")
+    await notify(
+        message,
+        f"⛔ Haqorat uchun siz {core.PROFANITY_BAN_HOURS} soatga vaqtinchalik bloklandingiz.\n"
+        f"Botdan foydalanish <b>{until}</b> da qaytadi.",
+    )
+    who = message.from_user.username or message.from_user.first_name or "?"
+    await alert_admin(
+        f"🚫 Haqorat uchun blok: <code>{uid}</code> (@{core.escape_html(str(who))}) — {strikes} marta.\n"
+        f"Topilgan: <code>{core.escape_html(str(term))}</code>\n"
+        f"Xabar: {core.escape_html(text[:200])}",
+        markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [btn("🔓 Blokdan chiqarish", url=command_link(f"/unban {uid}")),
+                 btn("👤 Profil", url=command_link(f"/user {uid}"))]
+            ]
+        ),
+    )
+    return False
+
+
 async def preflight(message) -> bool:
-    """Umumiy tekshiruv: guruh filtiri, ro'yxatdan o'tkazish, ban va spam limiti."""
+    """Umumiy tekshiruv: guruh filtiri, ro'yxatdan o'tkazish, ban, haqorat va spam limiti."""
     user = message.from_user
     if user is None:
         return False
@@ -247,8 +303,18 @@ async def preflight(message) -> bool:
     core.store.touch_user(user.id, username=user.username, first_name=user.first_name)
     if not is_admin(user.id):
         if core.store.is_banned(user.id):
-            await notify(message, "⛔ Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            expires = core.store.ban_expire_at(user.id)
+            if expires:
+                await notify(
+                    message,
+                    f"⛔ Siz vaqtinchalik cheklansiz. Yana <b>{core.human_span(expires - time.time())}</b> kuting.",
+                )
+            else:
+                await notify(message, "⛔ Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
             return False
+        if core.PROFANITY_MODE != "off" and moderation_needed(message):
+            if not await check_profanity(message):
+                return False
         allowed, wait = core.limiter.check(user.id)
         if not allowed:
             await notify(message, f"⏳ Juda ko'p so'rov. {core.human_wait(wait)} soniyadan so'ng qayta urinib ko'ring.")
@@ -260,6 +326,24 @@ async def preflight(message) -> bool:
             )
             return False
     return True
+
+
+@dp.callback_query.outer_middleware()
+async def ban_guard_middleware(handler, event, data):
+    """Tugmalar preflight'dan o'tmaydi — bloklangan foydalanuvchiga shu yerda to'siq."""
+    user = event.from_user
+    if user and not is_admin(user.id) and core.store.is_banned(user.id):
+        expires = core.store.ban_expire_at(user.id)
+        text = (
+            f"⛔ Vaqtinchalik cheklovsiz. Yana {core.human_span(expires - time.time())} kuting."
+            if expires else "⛔ Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz."
+        )
+        try:
+            await event.answer(text, show_alert=True)
+        except TelegramAPIError:
+            pass
+        return
+    return await handler(event, data)
 
 
 def group_allowed(message) -> bool:
@@ -346,7 +430,8 @@ HELP_TEXT = (
     "🧠 <b>Rejimlar</b> — <code>/mode</code>: tarjimon, o'qituvchi, dasturchi, yozuvchi, matematikachi.\n"
     "📝 <b>Eslatmalar</b> — <code>/remember Ismim Muslimbek</code>, <code>/notes</code>, <code>/forget</code>.\n"
     "👥 <b>Odam qo'shish</b> — <code>/add</code> deb yozing, keyin kontakt yuboring (yoki <code>/add 123456789</code>).\n"
-    "🛑 <b>Bekor qilish</b> — <code>/stop</code> joriy javobni to'xtatadi.\n\n"
+    "🛑 <b>Bekor qilish</b> — <code>/stop</code> joriy javobni to'xtatadi.\n"
+    "⚠️ <b>Intizom</b> — haqoratli so'z birinchi marta ogohlantiradi, ikkinchi marta 24 soatga vaqtinchalik bloklaydi.\n\n"
     "Boshqa buyruqlar: <code>/new</code> · <code>/settings</code> · <code>/model</code> · <code>/voice</code> · <code>/sites</code>"
 )
 
@@ -1065,6 +1150,16 @@ def display_name(user: dict) -> str:
     return user.get("first_name") or (f"@{user['username']}" if user.get("username") else f"foydalanuvchi {user['id']}")
 
 
+def ban_label(user: dict) -> str:
+    """Ban holatini matn ko'rinishida qaytaradi: doimiy yoki qancha vaqt qolgani."""
+    if not user.get("banned"):
+        return "yo'q"
+    expires = user.get("ban_expires")
+    if not expires:
+        return "doimiy"
+    return f"vaqtinchalik · {core.human_span(max(0, expires - time.time()))} qoldi"
+
+
 def invite_link(referrer_id: int) -> str:
     return f"{BOT_URL}?start=ref{referrer_id}"
 
@@ -1181,7 +1276,9 @@ def users_panel_text(rows: list, total: int, page: int, search: str) -> str:
     for index, row in enumerate(rows, start=page * 8 + 1):
         flags = []
         if row.get("banned"):
-            flags.append("⛔")
+            flags.append(f"⛔ {ban_label(row)}")
+        if row.get("strikes"):
+            flags.append(f"⚠️ {row['strikes']} ogohlantirish")
         if row.get("added_by"):
             flags.append("👥 taklif")
         lines.append(
@@ -1433,14 +1530,20 @@ async def admin_broadcast(message: types.Message, command: CommandObject):
 async def admin_ban(message: types.Message, command: CommandObject):
     if not is_admin(message.from_user.id):
         return
-    uid = (command.args or "").strip()
-    if not uid.lstrip("-").isdigit():
-        await notify(message, "Namuna: <code>/ban 123456789</code>")
+    args = (command.args or "").split()
+    if not args or not args[0].lstrip("-").isdigit():
+        await notify(message, "Namuna: <code>/ban 123456789</code> yoki <code>/ban 123456789 24</code>")
         return
-    core.store.touch_user(int(uid))
-    core.store.set_flag(int(uid), "banned", 1)
-    core.reset_session(int(uid))
-    await notify(message, f"⛔ <code>{uid}</code> bloklandi.")
+    uid = int(args[0])
+    hours = None
+    if len(args) > 1 and args[1].isdigit():
+        hours = float(args[1])
+    core.store.ban_user(uid, hours=hours)
+    core.reset_session(uid)
+    if hours:
+        await notify(message, f"⛔ <code>{uid}</code> {core.human_span(hours * 3600)}ga bloklandi (avtomatik ochiladi).")
+    else:
+        await notify(message, f"⛔ <code>{uid}</code> doimiy bloklandi.")
 
 
 @dp.message(Command("unban"))
@@ -1451,8 +1554,8 @@ async def admin_unban(message: types.Message, command: CommandObject):
     if not uid.lstrip("-").isdigit():
         await notify(message, "Namuna: <code>/unban 123456789</code>")
         return
-    core.store.set_flag(int(uid), "banned", 0)
-    await notify(message, f"✅ <code>{uid}</code> blokdan chiqarildi.")
+    core.store.unban(int(uid))
+    await notify(message, f"✅ <code>{uid}</code> blokdan chiqarildi, ogohlantirishlar ham tozalandi.")
 
 
 @dp.message(Command("user"))
@@ -1470,7 +1573,8 @@ async def admin_user(message: types.Message, command: CommandObject):
         f"Username: @{core.escape_html(user.get('username') or '—')}\n"
         f"Ism: {core.escape_html(user.get('first_name') or '—')}\n"
         f"Rejim: {user.get('persona')} · Model: {model_of(user)}\n"
-        f"Ovoz: {user.get('voice')} · Qidiruv: {user.get('search')} · Ban: {user.get('banned')}\n"
+        f"Ovoz: {user.get('voice')} · Qidiruv: {user.get('search')} · Ban: {ban_label(user)}\n"
+        f"Haqorat zarbalari: {core.store.strikes(uid)}\n"
         f"Keldi: {ago(user.get('created_at'))} · Oxirgi: {ago(user.get('last_seen'))}\n"
         + (f"Taklif qildi: <code>{user.get('added_by')}</code>\n" if user.get("added_by") else "")
         + f"Bugungi so'rov: {core.store.today_count(uid)} · Jami: {core.store.total_requests(uid)}\n"
