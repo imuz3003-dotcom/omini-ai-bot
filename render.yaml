@@ -52,7 +52,7 @@ services:
       - key: PROFANITY_BLOCK_AFTER
         value: "2"
       - key: PROFANITY_BAN_HOURS
-        value: "24"
+        value: "0"
       - key: TTS_LANGS
         value: uz,tr
       - key: IMAGE_PROVIDER

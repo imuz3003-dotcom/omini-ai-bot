@@ -48,7 +48,8 @@ CHUNK_LIMIT = 3600
 # So'kinish moderasiyasi: "off" — o'chirilgan, "warn" — faqat ogohlantirish, "block" — ogohlantirib, keyin bloklash
 PROFANITY_MODE = (os.getenv("PROFANITY_MODE", "block") or "block").lower()
 PROFANITY_BLOCK_AFTER = max(1, int(os.getenv("PROFANITY_BLOCK_AFTER", "2")))
-PROFANITY_BAN_HOURS = max(1, int(os.getenv("PROFANITY_BAN_HOURS", "24")))
+# 0 = doimiy blok (admin /unban qilmaguncha ochilmaydi); >0 = shuncha soatdan keyin o'zi ochiladi
+PROFANITY_BAN_HOURS = max(0, int(os.getenv("PROFANITY_BAN_HOURS", "0")))
 
 if not BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("BOT_TOKEN yoki GEMINI_API_KEY topilmadi! .env faylini tekshiring.")

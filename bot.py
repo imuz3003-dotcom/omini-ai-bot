@@ -254,33 +254,53 @@ def moderation_needed(message) -> bool:
     return action not in ("translate", "summarize")
 
 
+async def purge_banned_in_chat(message, user_id: int, until_date=None):
+    """Bloklangan foydalanuvchini guruhdan ham to'sadi — Telegram faqat admin huquqi bilan ruxsat beradi."""
+    for action in (
+        lambda: bot.delete_message(chat_id=message.chat.id, message_id=message.message_id),
+        lambda: bot.ban_chat_member(chat_id=message.chat.id, user_id=user_id, until_date=until_date),
+    ):
+        try:
+            await action()
+        except TelegramAPIError:
+            pass  # bot admin emas yoki xabar allaqachon o'chirilgan
+
+
 async def check_profanity(message) -> bool:
-    """Birinchi marta ogohlantiradi, takirlansa 24 soatlik vaqtinchalik blok qo'yadi."""
+    """Birinchi marta ogohlantiradi, takirlansa bloklaydi (PROFANITY_BAN_HOURS=0 — doimiy)."""
     text = message.text or message.caption or ""
     hit, term = core.contains_profanity(text)
     if not hit or core.PROFANITY_MODE == "off":
         return True
     uid = message.from_user.id
     strikes = core.store.record_strike(uid)
+    hours = core.PROFANITY_BAN_HOURS
+    threat = f"botdan {hours} soatga cheklanasiz" if hours else "botdan doimiy bloklanasiz"
     if core.PROFANITY_MODE == "warn" or strikes < core.PROFANITY_BLOCK_AFTER:
         left = core.PROFANITY_BLOCK_AFTER - strikes
         await notify(
             message,
             "⚠️ Iltimos, e'tiborli bo'ling — haqoratli so'z ishlatdingiz.\n"
-            f"Yana {left} marta takirlansa, botdan {core.PROFANITY_BAN_HOURS} soatga vaqtinchalik cheklanasiz.",
+            f"Yana {left} marta takirlansa, {threat}.",
         )
         return False
-    expires = core.store.ban_user(uid, hours=core.PROFANITY_BAN_HOURS)
+    expires = core.store.ban_user(uid, hours=hours or None)
     core.reset_session(uid)
-    until = datetime.fromtimestamp(expires, timezone.utc).astimezone().strftime("%d.%m, %H:%M")
-    await notify(
-        message,
-        f"⛔ Haqorat uchun siz {core.PROFANITY_BAN_HOURS} soatga vaqtinchalik bloklandingiz.\n"
-        f"Botdan foydalanish <b>{until}</b> da qaytadi.",
-    )
+    if expires:
+        until = datetime.fromtimestamp(expires, timezone.utc).astimezone().strftime("%d.%m, %H:%M")
+        body = (f"⛔ Haqorat uchun siz <b>{hours} soatga</b> bloklandingiz.\n"
+                f"Botdan foydalanish <b>{until}</b> da qaytadi.")
+    else:
+        body = ("⛔ Haqorat uchun siz <b>doimiy bloklandingiz</b>.\n"
+                "Bu botning hech bir chatida — shaxsiy suhbatda ham, guruhlarda ham — endi yozolmaysiz. "
+                "Blokni faqat admin ochadi.")
+    await notify(message, body)
+    if message.chat.type != "private":
+        await purge_banned_in_chat(message, uid, until_date=expires)
     who = message.from_user.username or message.from_user.first_name or "?"
     await alert_admin(
-        f"🚫 Haqorat uchun blok: <code>{uid}</code> (@{core.escape_html(str(who))}) — {strikes} marta.\n"
+        f"🚫 Haqorat uchun {'doimiy' if not expires else f'{hours} soatlik'} blok: <code>{uid}</code> "
+        f"(@{core.escape_html(str(who))}) — {strikes} marta.\n"
         f"Topilgan: <code>{core.escape_html(str(term))}</code>\n"
         f"Xabar: {core.escape_html(text[:200])}",
         markup=InlineKeyboardMarkup(
@@ -294,15 +314,18 @@ async def check_profanity(message) -> bool:
 
 
 async def preflight(message) -> bool:
-    """Umumiy tekshiruv: guruh filtiri, ro'yxatdan o'tkazish, ban, haqorat va spam limiti."""
+    """Umumiy tekshiruv: ban, haqorat, guruh filtiri, spam va kunlik limit."""
     user = message.from_user
     if user is None:
         return False
-    if message.chat.type != "private" and not group_allowed(message):
-        return False
-    core.store.touch_user(user.id, username=user.username, first_name=user.first_name)
+    is_group = message.chat.type != "private"
     if not is_admin(user.id):
         if core.store.is_banned(user.id):
+            # Blok botga keladigan har qanday xabarda ishlaydi: guruhda xabari o'chiriladi,
+            # shaxsiy suhbatda esa bot javob bermaydi.
+            if is_group:
+                await purge_banned_in_chat(message, user.id)
+                return False
             expires = core.store.ban_expire_at(user.id)
             if expires:
                 await notify(
@@ -310,11 +333,18 @@ async def preflight(message) -> bool:
                     f"⛔ Siz vaqtinchalik cheklansiz. Yana <b>{core.human_span(expires - time.time())}</b> kuting.",
                 )
             else:
-                await notify(message, "⛔ Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+                await notify(message, "⛔ Siz bu botdan doimiy bloklangansiz — hech qaysi chatda yozolmaysiz.")
             return False
+        # Guruh xabarlari ham tekshiriladi: bot xabarni ko'rsa, haqorat qiluvchi shu yerda
+        # ogohlantiriladi yoki bloklanadi (Telegram botga guruhni ko'rsatishi uchun
+        # BotFather'da /setprivacy Disable bo'lishi kerak).
         if core.PROFANITY_MODE != "off" and moderation_needed(message):
             if not await check_profanity(message):
                 return False
+    if is_group and not group_allowed(message):
+        return False
+    core.store.touch_user(user.id, username=user.username, first_name=user.first_name)
+    if not is_admin(user.id):
         allowed, wait = core.limiter.check(user.id)
         if not allowed:
             await notify(message, f"⏳ Juda ko'p so'rov. {core.human_wait(wait)} soniyadan so'ng qayta urinib ko'ring.")
@@ -336,7 +366,7 @@ async def ban_guard_middleware(handler, event, data):
         expires = core.store.ban_expire_at(user.id)
         text = (
             f"⛔ Vaqtinchalik cheklovsiz. Yana {core.human_span(expires - time.time())} kuting."
-            if expires else "⛔ Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz."
+            if expires else "⛔ Siz bu botdan doimiy bloklangansiz — hech qaysi chatda yozolmaysiz."
         )
         try:
             await event.answer(text, show_alert=True)
@@ -431,7 +461,8 @@ HELP_TEXT = (
     "📝 <b>Eslatmalar</b> — <code>/remember Ismim Muslimbek</code>, <code>/notes</code>, <code>/forget</code>.\n"
     "👥 <b>Odam qo'shish</b> — <code>/add</code> deb yozing, keyin kontakt yuboring (yoki <code>/add 123456789</code>).\n"
     "🛑 <b>Bekor qilish</b> — <code>/stop</code> joriy javobni to'xtatadi.\n"
-    "⚠️ <b>Intizom</b> — haqoratli so'z birinchi marta ogohlantiradi, ikkinchi marta 24 soatga vaqtinchalik bloklaydi.\n\n"
+    "⚠️ <b>Intizom</b> — haqoratli so'z birinchi marta ogohlantiradi, ikkinchi marta botdan <b>doimiy</b> bloklaydi: "
+    "hech qaysi chatda (guruhlarda ham) yozolmaysiz, blokdani faqat admin ochadi.\n\n"
     "Boshqa buyruqlar: <code>/new</code> · <code>/settings</code> · <code>/model</code> · <code>/voice</code> · <code>/sites</code>"
 )
 
