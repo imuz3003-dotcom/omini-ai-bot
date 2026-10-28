@@ -3,25 +3,31 @@
 # avtomatik yaratiladi. BOT_TOKEN va GEMINI_API_KEY sync: false — ular faqat
 # Render dashboard'dagi Environment Keys'ga kiritiladi (repositoriyada saqlanmaydi).
 #
-# DIQQAT — xotira (SQLite) haqida: free (bepul) planda Persistent Disk yo'q,
-# shuning uchun bot_data.db qayta deploy yoki restart'da o'chadi (xotira, odamlar
-# ro'yxati va kontaktlar nolga qaytadi). Doimiy xotira kerak bo'lsa: plan: starter
-# qiling va quyidagi qatorlarni oching (disk $7/oylik rejada mavjud):
-#   disks:
-#     - name: omini-data
-#       mountPath: /var/data
-# so'ng DB_PATH qiymatini /var/data/bot_data.db qilib o'zgartiring.
+# Xotira (SQLite) doimiy bo'lishi uchun bu servis "starter" ($7/oy) rejada va
+# Persistent Disk'ga yozadi: DB_PATH = /var/data/bot_data.db. Shu disk deploy va
+# restart'lardan keyin saqlanadi, ya'ni xotira, kontaktlar va ban/ogohlantirish
+# zarbalari qayta chiqmaydi. Bepul (free) rejaga qaytsangiz disk yo'qoladi va
+# baza yozuvlari o'chadi.
+#
+# DIQQAT: plan: starter yozuvi Render'da to'lov usuli (payment method) soraydi —
+# dashboard'da billing kiritilmagan bo'lsa, servis yangilanishi rad etiladi.
+# Birinchi deploy'dan keyin eski /opt/render/project/src/bot_data.db faylini
+# /var/data/'ga ko'chirish uchun Shell'da: cp -n bot_data.db /var/data/
 
 services:
   - type: web
     name: omini-ai-bot
     runtime: python
-    plan: free
+    plan: starter
     region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     healthCheckPath: /health
     autoDeploy: true
+    disks:
+      - name: omini-data
+        mountPath: /var/data
+        size: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.4
@@ -58,4 +64,4 @@ services:
       - key: LOG_FILE
         value: ""
       - key: DB_PATH
-        value: bot_data.db
+        value: /var/data/bot_data.db

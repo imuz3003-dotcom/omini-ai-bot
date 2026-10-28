@@ -94,6 +94,9 @@ class Store:
 
     def __init__(self, path: str):
         self._lock = threading.Lock()
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)  # Render Persistent Disk mount yo'li
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(
