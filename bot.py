@@ -313,28 +313,36 @@ async def check_profanity(message) -> bool:
     return False
 
 
+async def reject_banned(message) -> bool:
+    """Bloklangan foydalanuvchini to'sadi: guruhda xabari o'chiriladi (bot admin
+    bo'lsa) va chatdan chiqariladi, shaxsiy suhbatda esa bot javob bermaydi.
+    True — to'siq qo'yildi degani."""
+    user = getattr(message, "from_user", None)
+    if user is None or is_admin(user.id) or not core.store.is_banned(user.id):
+        return False
+    if message.chat.type != "private":
+        await purge_banned_in_chat(message, user.id)
+        return True
+    expires = core.store.ban_expire_at(user.id)
+    if expires:
+        await notify(
+            message,
+            f"⛔ Siz vaqtinchalik cheklansiz. Yana <b>{core.human_span(expires - time.time())}</b> kuting.",
+        )
+    else:
+        await notify(message, "⛔ Siz bu botdan doimiy bloklangansiz — hech qaysi chatda yozolmaysiz.")
+    return True
+
+
 async def preflight(message) -> bool:
     """Umumiy tekshiruv: ban, haqorat, guruh filtiri, spam va kunlik limit."""
     user = message.from_user
     if user is None:
         return False
     is_group = message.chat.type != "private"
+    if await reject_banned(message):
+        return False
     if not is_admin(user.id):
-        if core.store.is_banned(user.id):
-            # Blok botga keladigan har qanday xabarda ishlaydi: guruhda xabari o'chiriladi,
-            # shaxsiy suhbatda esa bot javob bermaydi.
-            if is_group:
-                await purge_banned_in_chat(message, user.id)
-                return False
-            expires = core.store.ban_expire_at(user.id)
-            if expires:
-                await notify(
-                    message,
-                    f"⛔ Siz vaqtinchalik cheklansiz. Yana <b>{core.human_span(expires - time.time())}</b> kuting.",
-                )
-            else:
-                await notify(message, "⛔ Siz bu botdan doimiy bloklangansiz — hech qaysi chatda yozolmaysiz.")
-            return False
         # Guruh xabarlari ham tekshiriladi: bot xabarni ko'rsa, haqorat qiluvchi shu yerda
         # ogohlantiriladi yoki bloklanadi (Telegram botga guruhni ko'rsatishi uchun
         # BotFather'da /setprivacy Disable bo'lishi kerak).
@@ -367,6 +375,16 @@ async def preflight(message) -> bool:
             )
             return False
     return True
+
+
+@dp.message.outer_middleware()
+async def message_ban_guard(handler, event, data):
+    """Blok — xabarning BARCHA turlari uchun umumiy to'siq.
+    Bu yerda bo'lishi muhim: /start, /new, /stop, /cancel va ba'zi media handlerlari
+    preflight'ni chaqirmaydi — blok ularni ham yopishi kerak."""
+    if await reject_banned(event):
+        return
+    return await handler(event, data)
 
 
 @dp.callback_query.outer_middleware()
