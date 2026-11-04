@@ -341,6 +341,17 @@ async def preflight(message) -> bool:
         if core.PROFANITY_MODE != "off" and moderation_needed(message):
             if not await check_profanity(message):
                 return False
+    if is_admin(user.id) and not is_group and core.PROFANITY_MODE != "off" and moderation_needed(message):
+        # Adminni bloklamaymiz, lekin detektor javobini ko'rsatamiz — shunda "nega
+        # bloklamayapti?" degan savol o'z javobini topadi (admin istisno qilingan).
+        hit, term = core.contains_profanity(message.text or message.caption or "")
+        if hit:
+            await notify(
+                message,
+                f"🔎 Moderatsiya: <code>{core.escape_html(str(term))}</code> topildi. "
+                "Siz adminsiz — blok qo'yilmaydi.\n"
+                "Boshqa foydalanuvchida: 1-marta ogohlantirish, 2-marta doimiy blok.",
+            )
     if is_group and not group_allowed(message):
         return False
     core.store.touch_user(user.id, username=user.username, first_name=user.first_name)
