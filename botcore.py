@@ -396,7 +396,10 @@ PROFANITY_PATTERNS = [
     r"|\bslut\b|\bpussy\b|\bdick\w*|\bcock\s?hole|\bcunt\w*|n[iy]gg[ae]r?s?\b|\bbastard\b)",
     # ruscha / kirill so'kinish so'zlari
     r"(?:" + "|".join([
-        r"(?<![нлр])[её]б" + _CYR + r"{0,8}",
+        # "[её]б" — o'zbek kirill yozuvidagi "деб" (deb), "веб" kabi ODDIY so'zlarni ham
+        # ushlaydi, shuning uchun bu stem faqat so'z boshida yoki ovozli (ъ/ь) dan
+        # keyin kelganda hisobga olinadi: ебать, заебись, выеб... lekin "деб"/"веб" emas.
+        r"(?:(?<![а-яё])|(?<=[аеиоуыэюяёъь]))[её]б" + _CYR + r"{0,8}",
         r"ху[йяёиe]" + _CYR + r"{0,6}",
         r"п[иы]зд" + _CYR + r"{0,6}",
         r"бля" + _CYR + r"{0,6}",
@@ -405,14 +408,19 @@ PROFANITY_PATTERNS = [
         r"гандо" + _CYR + r"{0,4}",
         r"п[еиa]д[оа]р" + _CYR + r"{0,5}",
         r"мраз" + _CYR + r"{0,4}",
-        r"(?:говн|гавн|сволот|ублюд|сука|сучар|придур|уродин)[а-яё]*",
+        r"(?:говн|гавн|сволот|ублюд|сука|сучк|сучар|придур|уродин)[а-яё]*",
     ]) + r")",
     # o'zbekcha (lotin + kirill) — aniq so'kinish so'zlari, so'z chegarasi bilan
-    r"(?:\blan\b|(?<![а-я])лан(?![а-я])|(?<![a-z])lak{1,2}i?(?![a-z])|(?<![а-я])лакк[а-яё]{0,3}"
-    r"|(?<![a-z])(?:x|h)?u\s?(?:w|v|y|й)?\s?[аaоo]\s?[qgк]'?"
-    r"|(?<![а-я])(?:х|к)?у\s?(?:в|й|y)?\s?[яеаoy]\s?[кқq]|(?<![а-я])ув[оаaя][аo]?[кқq]"
-    r"|пизд|p[iy]zd|(?<![а-я])(?:бузур|пузур|н?елат)(?![а-я])|(?<![a-z])n?elat\b|bu[зz][уu]r"
-    r"|(?<![a-z])suk[аa](?:k|')?|\bsuk[aq]\b"
+    # "u yoq dedi" / "u o'qidi" / "uyaga" kabi ODDIY so'zlar bloklanmasligi uchun
+    # bu tarmoqlarda: (1) uning oldidan bo'sh joy ruxsat etilmaydi, (2) undosh (q/қ)
+    # MAJBURIY, (3) "о/o" ovozli qatnashmaydi — chaqiriq so'zi bitik yoziladi:
+    # uyaq / uwaq / uvaq / уяқ / увақ.
+    r"(?:\blan\b|(?<![а-я])лан[а-яё]*|(?<![a-z])lak{1,2}i?(?![a-z])|(?<![а-я])лакк[а-яё]{0,3}"
+    r"|(?<![a-z])(?:x|h)?u(?:w|v|y|й)?[aа]'?(?:q|қ|к)'?"
+    r"|(?<![а-я])(?:х|к)?у(?:в|й|y)?[яае][кқq]|(?<![а-я])ув[оаaя][аoяе]?[кқq]"
+    r"|(?<![a-z])bl(?:y|j)a[a-z]*"
+    r"|п[еиы]зд|p[iy]zd|(?<![а-я])(?:бузур|пузур|н?елат)(?![а-я])|(?<![a-z])(?:y|n)?elat\b|bu[зz][уu]r"
+    r"|(?<![a-z])suk{1,2}[аa](?:k|')?|\bsuk[aq]\b"
     r"|(?<![a-z])pishi\b|\bso'ak?\b)",
 ]
 

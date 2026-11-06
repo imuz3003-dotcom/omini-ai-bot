@@ -1454,7 +1454,7 @@ async def handle_unsupported_media(message: types.Message):
     )
 
 
-@dp.message(F.text)
+@dp.message(F.text, ~F.text.startswith("/"))
 async def ai_chat(message: types.Message):
     admin_target = pending_dm.get(message.from_user.id)
     if admin_target and is_admin(message.from_user.id):
@@ -1467,9 +1467,6 @@ async def ai_chat(message: types.Message):
             f"{status}: <b>{core.escape_html(display_name(target))}</b> (<code>{admin_target}</code>)\n\n"
             f"Yuborilgan xabar:\n<i>{core.escape_html(message.text[:300])}</i>",
         )
-        return
-    if message.text.startswith("/"):
-        await notify(message, "🤔 Bunday buyruq yo'q. <code>/help</code> bilan ro'yxatni ko'ring.")
         return
     if not await preflight(message):
         return
@@ -1641,6 +1638,15 @@ async def admin_user(message: types.Message, command: CommandObject):
         f"Suhbatda saqlangan xabar: {len(core.store.history(uid, 200))}"
     )
     await notify(message, text)
+
+
+# Noma'lum buyruq — ENGIN (oxirida) qo'yiladi. aiogram handlerlarni ro'yxatga
+# olingan tartibida tekshiradi: shu sababli oddiy matn handleri (ai_chat) endi
+# "/" bilan boshlanadigan xabarlarni olmaydi, bu yer esa faqat yuqoridagi
+# Command(...) larning hech biriga tushmagan buyruqlarni ushlaydi.
+@dp.message(F.text.startswith("/"))
+async def cmd_unknown(message: types.Message):
+    await notify(message, "🤔 Bunday buyruq yo'q. <code>/help</code> bilan ro'yxatni ko'ring.")
 
 
 @dp.error()
