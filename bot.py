@@ -496,6 +496,88 @@ HELP_TEXT = (
 )
 
 
+async def require_group_admin(message: types.Message) -> bool:
+    if message.chat.type not in ("group", "supergroup"):
+        await notify(message, "Bu buyruq faqat guruh ichida ishlaydi.")
+        return False
+    if message.sender_chat or not message.from_user or message.from_user.is_bot:
+        await notify(message, "Sozlamani o'zgartirish uchun shaxsiy akkauntingiz nomidan yozing.")
+        return False
+    try:
+        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+    except TelegramAPIError as error:
+        logging.warning("Guruh adminini tekshirishda xato (%s): %s", message.chat.id, error)
+        await notify(message, "Admin huquqini tekshirib bo'lmadi. Botni guruhga admin qilib, qayta urinib ko'ring.")
+        return False
+    if member.status not in ("creator", "administrator"):
+        await notify(message, "Bu buyruq faqat shu guruh adminlari uchun.")
+        return False
+    return True
+
+
+@dp.message(Command("rules"))
+async def cmd_rules(message: types.Message):
+    if message.chat.type not in ("group", "supergroup"):
+        await notify(message, "Bu buyruq faqat guruh ichida ishlaydi.")
+        return
+    rules = core.store.group_settings(message.chat.id)["rules"]
+    if not rules:
+        await notify(message, "Guruh qoidalari hali belgilanmagan. Guruh admini /setrules matn orqali belgilaydi.")
+        return
+    await message.answer(f"Guruh qoidalari:\n\n{rules}", parse_mode=None)
+
+
+@dp.message(Command("setrules"))
+async def cmd_setrules(message: types.Message, command: CommandObject):
+    if not await require_group_admin(message):
+        return
+    rules = (command.args or "").strip()
+    if not rules:
+        await notify(message, "Namuna: /setrules Bir-biringizni hurmat qiling. Reklama yubormang.")
+        return
+    if len(rules.encode("utf-16-le")) // 2 > 3500:
+        await notify(message, "Qoidalar 3500 belgidan oshmasin; ayrim belgilar ikkita o'rin egallaydi.")
+        return
+    core.store.set_group_rules(message.chat.id, rules)
+    await notify(message, "Guruh qoidalari saqlandi. Ko'rish: /rules")
+
+
+@dp.message(Command("welcome"))
+async def cmd_welcome(message: types.Message, command: CommandObject):
+    if not await require_group_admin(message):
+        return
+    option = (command.args or "").strip().lower()
+    if not option:
+        enabled = core.store.group_settings(message.chat.id)["welcome_enabled"]
+        await notify(message, f"Xush kelibsiz xabari {on_off(enabled)}. Sozlash: /welcome on yoki /welcome off")
+        return
+    if option not in ("on", "off"):
+        await notify(message, "Namuna: /welcome on yoki /welcome off")
+        return
+    enabled = option == "on"
+    core.store.set_group_welcome(message.chat.id, enabled)
+    await notify(message, f"Xush kelibsiz xabari {on_off(enabled)}.")
+
+
+@dp.message(F.chat.type.in_({"group", "supergroup"}), F.new_chat_members)
+async def welcome_group_members(message: types.Message):
+    if not core.store.group_settings(message.chat.id)["welcome_enabled"]:
+        return
+    members = [
+        member for member in message.new_chat_members
+        if not member.is_bot and (is_admin(member.id) or not core.store.is_banned(member.id))
+    ]
+    if not members:
+        return
+    names = ", ".join(member.full_name for member in members[:10])
+    if len(members) > 10:
+        names += f" va yana {len(members) - 10} ta a'zo"
+    await message.answer(
+        f"Xush kelibsiz, {names}!\n\n{message.chat.title} guruhiga qo'shildingiz.\nGuruh qoidalari: /rules",
+        parse_mode=None,
+    )
+
+
 # ------------------------------------------------------------------------ start
 
 

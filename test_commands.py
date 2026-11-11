@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import AsyncMock, patch
 
 os.environ["BOT_TOKEN"] = os.environ.get("BOT_TOKEN", "123456:AAtest-token")
 os.environ["GEMINI_API_KEY"] = os.environ.get("GEMINI_API_KEY", "test-key")
@@ -249,6 +250,264 @@ class CommandRouting(unittest.TestCase):
         self.assertFalse(app.core.store.is_banned(USER), "oddiy gap uchun bloklandi!")
         self.assertEqual(app.core.store.strikes(USER), 0, "oddiy gap uchun zarba yozildi")
         self.assertEqual(self.ai_calls, [text], "oddiy gap AI ga bormadi")
+
+
+class GroupSession(FakeSession):
+    def __init__(self):
+        super().__init__()
+        self.roles = {}
+        self.lookup_error = False
+
+    async def __call__(self, bot, method, timeout=None):
+        result = await super().__call__(bot, method, timeout)
+        if type(method).__name__ == "GetMe":
+            return types.User(id=bot.id, is_bot=True, first_name="omini", username="omini_test_bot")
+        if type(method).__name__ == "GetChatMember":
+            if self.lookup_error:
+                raise app.TelegramAPIError(method=method, message="Membership lookup failed")
+            user = types.User(id=method.user_id, is_bot=False, first_name="Test")
+            role = self.roles.get((method.chat_id, method.user_id), "member")
+            if role == "creator":
+                return types.ChatMemberOwner(user=user, is_anonymous=False)
+            if role == "administrator":
+                permissions = {
+                    name: False for name, field in types.ChatMemberAdministrator.model_fields.items()
+                    if field.is_required() and name != "user"
+                }
+                return types.ChatMemberAdministrator(user=user, **permissions)
+            return types.ChatMemberMember(user=user)
+        return result
+
+
+class GroupWelcomeRules(unittest.IsolatedAsyncioTestCase):
+    CHAT = -1002345
+    OTHER_CHAT = -1006789
+    MODERATOR = 2222
+
+    async def asyncSetUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory(prefix="omini_group_"))
+        self.db_path = os.path.join(directory, "groups.db")
+        self.store = app.core.Store(":memory:")
+        self.addCleanup(lambda: self.store._db.close())
+        self.enterContext(patch.object(app.core, "store", self.store))
+        self.session = GroupSession()
+        self.session.roles[(self.CHAT, self.MODERATOR)] = "administrator"
+        self.enterContext(patch.object(app.bot, "session", self.session))
+        self.ai = self.enterContext(patch.object(app, "ask_ai", new_callable=AsyncMock))
+
+    async def asyncTearDown(self):
+        self.ai.assert_not_called()
+
+    async def feed(self, text=None, user_id=USER, chat_id=None, chat_type="supergroup", **fields):
+        payload = update_of(text, user_id=user_id, chat_id=chat_id or self.CHAT, chat_type=chat_type)
+        payload["message"]["chat"]["title"] = "Sinf <A> & B"
+        payload["message"].update(fields)
+        update = types.Update.model_validate(payload, context={"bot": app.bot})
+        await app.dp.feed_update(app.bot, update)
+
+    def sent(self, chat_id=None):
+        return "\n".join(self.session.texts(chat_id or self.CHAT))
+
+    def use_persistent_store(self):
+        """Davomiylik testlari uchun xotira store'ini fayl store'iga almashtiradi."""
+        self.store._db.close()
+        self.store = app.core.Store(self.db_path)
+        self.addCleanup(self.store._db.close)
+        app.core.store = self.store
+
+    def newcomers(self):
+        return [
+            {"id": 6001, "is_bot": False, "first_name": "Ali <b> & Vali"},
+            {"id": 6002, "is_bot": False, "first_name": "Diyor"},
+            {"id": 6003, "is_bot": True, "first_name": "HelperRobot"},
+        ]
+
+    async def test_new_human_members_receive_welcome_with_rules_command(self):
+        for chat_type in ("group", "supergroup"):
+            with self.subTest(chat_type=chat_type):
+                self.session.calls.clear()
+                await self.feed(chat_type=chat_type, new_chat_members=self.newcomers())
+                self.assertIn("Xush kelibsiz", self.sent())
+                self.assertIn("Ali <b> & Vali", self.sent())
+                self.assertIn("Diyor", self.sent())
+                self.assertIn("Sinf <A> & B", self.sent())
+                self.assertIn("/rules", self.sent())
+                self.assertNotIn("HelperRobot", self.sent())
+                messages = [p for name, p in self.session.calls if name == "SendMessage"]
+                self.assertTrue(all(p.get("parse_mode") is None for p in messages))
+
+    async def test_bots_and_banned_newcomers_are_not_welcomed(self):
+        self.store.ban_user(6001)
+        await self.feed(new_chat_members=[self.newcomers()[0], self.newcomers()[2]])
+        self.assertEqual(self.sent(), "")
+
+    async def test_large_join_event_fits_in_one_telegram_message(self):
+        members = [
+            {"id": 7000 + i, "is_bot": False, "first_name": "A" * 64, "last_name": "B" * 64}
+            for i in range(100)
+        ]
+        await self.feed(new_chat_members=members)
+        messages = self.session.texts(self.CHAT)
+        self.assertEqual(len(messages), 1)
+        self.assertLessEqual(len(messages[0].encode("utf-16-le")) // 2, 4096)
+        self.assertIn("90", messages[0])
+
+    async def test_rules_not_set_explains_how_to_set_them(self):
+        await self.feed("/rules")
+        self.assertIn("hali belgilanmagan", self.sent())
+        self.assertIn("/setrules", self.sent())
+
+    async def test_admin_and_owner_can_set_rules_that_members_can_read(self):
+        for role in ("administrator", "creator"):
+            with self.subTest(role=role):
+                self.session.roles[(self.CHAT, self.MODERATOR)] = role
+                await self.feed("/setrules Bir-biringizni hurmat qiling.\nReklama yo'q.", user_id=self.MODERATOR)
+                self.assertIn("saqlandi", self.sent())
+                self.session.calls.clear()
+                await self.feed("/rules")
+                self.assertIn("Bir-biringizni hurmat qiling.\nReklama yo'q.", self.sent())
+
+    async def test_rules_are_plain_text_not_html_or_mentions(self):
+        rules = '<a href="tg://user?id=123">Admin</a> & <b>salom</b>'
+        await self.feed("/setrules " + rules, user_id=self.MODERATOR)
+        self.session.calls.clear()
+        await self.feed("/rules")
+        self.assertIn(rules, self.sent())
+        message = next(p for name, p in self.session.calls if name == "SendMessage")
+        self.assertIsNone(message.get("parse_mode"))
+
+    async def test_members_including_bot_owner_cannot_change_group_settings(self):
+        await self.feed("/setrules Asl qoidalar", user_id=self.MODERATOR)
+        for user_id in (USER, ADMIN):
+            for command in ("/setrules O'zgartirish", "/welcome off"):
+                with self.subTest(user_id=user_id, command=command):
+                    self.session.calls.clear()
+                    await self.feed(command, user_id=user_id)
+                    self.assertIn("guruh admin", self.sent())
+                    self.assertNotIn("saqlandi", self.sent())
+        self.session.calls.clear()
+        await self.feed("/rules")
+        self.assertIn("Asl qoidalar", self.sent())
+        await self.feed(new_chat_members=self.newcomers())
+        self.assertIn("Xush kelibsiz", self.sent())
+
+    async def test_anonymous_sender_cannot_change_settings(self):
+        await self.feed("/setrules Asl qoidalar", user_id=self.MODERATOR)
+        self.session.calls.clear()
+        await self.feed(
+            "/setrules Yangi qoidalar", user_id=self.MODERATOR,
+            sender_chat={"id": self.CHAT, "type": "supergroup", "title": "Sinf"},
+        )
+        self.assertIn("shaxsiy akkaunt", self.sent())
+        self.assertNotIn("GetChatMember", self.session.names())
+        self.session.calls.clear()
+        await self.feed("/rules")
+        self.assertIn("Asl qoidalar", self.sent())
+
+    async def test_failed_permission_lookup_does_not_change_settings(self):
+        await self.feed("/setrules Asl qoidalar", user_id=self.MODERATOR)
+        self.session.lookup_error = True
+        self.session.calls.clear()
+        with self.assertLogs(level="WARNING") as logs:
+            await self.feed("/setrules Yangi qoidalar", user_id=self.MODERATOR)
+        self.assertIn("tekshirib bo'lmadi", self.sent())
+        self.assertNotIn("saqlandi", self.sent())
+        self.session.calls.clear()
+        await self.feed("/rules")
+        self.assertIn("Asl qoidalar", self.sent())
+
+    async def test_admin_permission_is_checked_again_after_demotion(self):
+        await self.feed("/setrules Asl qoidalar", user_id=self.MODERATOR)
+        self.session.roles[(self.CHAT, self.MODERATOR)] = "member"
+        self.session.calls.clear()
+        await self.feed("/setrules Yangi qoidalar", user_id=self.MODERATOR)
+        self.assertIn("guruh admin", self.sent())
+        self.session.calls.clear()
+        await self.feed("/rules")
+        self.assertIn("Asl qoidalar", self.sent())
+
+    async def test_settings_and_admin_permission_are_scoped_to_one_group(self):
+        await self.feed("/setrules Birinchi guruh", user_id=self.MODERATOR)
+        await self.feed("/welcome off", user_id=self.MODERATOR)
+        await self.feed("/setrules Ikkinchi guruh", user_id=self.MODERATOR, chat_id=self.OTHER_CHAT)
+        self.assertIn("guruh admin", self.sent(self.OTHER_CHAT))
+        self.session.calls.clear()
+        await self.feed("/rules", chat_id=self.OTHER_CHAT)
+        self.assertIn("hali belgilanmagan", self.sent(self.OTHER_CHAT))
+        await self.feed(new_chat_members=self.newcomers(), chat_id=self.OTHER_CHAT)
+        self.assertIn("Xush kelibsiz", self.sent(self.OTHER_CHAT))
+        await self.feed("/rules")
+        self.assertIn("Birinchi guruh", self.sent())
+        self.session.calls.clear()
+        await self.feed(new_chat_members=self.newcomers())
+        self.assertEqual(self.sent(), "")
+
+    async def test_welcome_toggle_and_rules_survive_reopening_database(self):
+        self.use_persistent_store()
+        await self.feed("/welcome off", user_id=self.MODERATOR)
+        await self.feed("/setrules Saqlangan qoidalar", user_id=self.MODERATOR)
+        self.assertIn("saqlandi", self.sent())
+        self.use_persistent_store()
+        self.session.calls.clear()
+        await self.feed(new_chat_members=self.newcomers())
+        self.assertEqual(self.sent(), "")
+        await self.feed("/rules")
+        self.assertIn("Saqlangan qoidalar", self.sent())
+        await self.feed("/welcome on", user_id=self.MODERATOR)
+        self.session.calls.clear()
+        await self.feed(new_chat_members=self.newcomers())
+        self.assertIn("Xush kelibsiz", self.sent())
+        await self.feed("/rules")
+        self.assertIn("Saqlangan qoidalar", self.sent())
+
+    async def test_invalid_commands_leave_existing_settings_unchanged(self):
+        await self.feed("/setrules Asl qoidalar", user_id=self.MODERATOR)
+        for command, expected in (
+            ("/setrules", "/setrules"),
+            ("/setrules " + "x" * 3501, "3500"),
+            ("/setrules " + "\U0001f600" * 2000, "3500"),
+            ("/welcome wrong", "/welcome on"),
+            ("/welcome on extra", "/welcome on"),
+        ):
+            with self.subTest(command=command[:50]):
+                self.session.calls.clear()
+                await self.feed(command, user_id=self.MODERATOR)
+                self.assertIn(expected, self.sent())
+                self.assertNotIn("saqlandi", self.sent())
+                self.session.calls.clear()
+                await self.feed("/rules")
+                self.assertIn("Asl qoidalar", self.sent())
+
+    async def test_welcome_without_arguments_shows_status_without_changing_it(self):
+        await self.feed("/welcome off", user_id=self.MODERATOR)
+        self.session.calls.clear()
+        await self.feed("/welcome", user_id=self.MODERATOR)
+        self.assertIn("o'chirilgan", self.sent())
+        self.session.calls.clear()
+        await self.feed(new_chat_members=self.newcomers())
+        self.assertEqual(self.sent(), "")
+
+    async def test_private_chat_and_channel_commands_do_not_change_group(self):
+        for chat_type in ("private", "channel"):
+            for command in ("/rules", "/setrules Yangi", "/welcome off"):
+                with self.subTest(chat_type=chat_type, command=command):
+                    self.session.calls.clear()
+                    await self.feed(command, chat_id=USER, chat_type=chat_type)
+                    self.assertIn("faqat guruh", self.sent(USER))
+                    self.assertNotIn("GetChatMember", self.session.names())
+
+    async def test_telegram_command_suffix_reaches_group_handler(self):
+        await self.feed("/setrules@omini_test_bot Guruh matni", user_id=self.MODERATOR)
+        self.assertIn("saqlandi", self.sent())
+        self.session.calls.clear()
+        await self.feed("/rules@omini_test_bot")
+        self.assertIn("Guruh matni", self.sent())
+
+    async def test_banned_user_still_cannot_use_rules_command(self):
+        self.store.ban_user(USER)
+        await self.feed("/rules")
+        self.assertEqual(self.sent(), "")
+        self.assertIn("BanChatMember", self.session.names())
 
 
 if __name__ == "__main__":

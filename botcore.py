@@ -137,6 +137,11 @@ class Store:
                 msg_id INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_tracked_user ON tracked(user_id);
+            CREATE TABLE IF NOT EXISTS group_settings(
+                chat_id INTEGER PRIMARY KEY,
+                rules TEXT NOT NULL DEFAULT '',
+                welcome_enabled INTEGER NOT NULL DEFAULT 1
+            );
             """
         )
         self._db.commit()
@@ -180,6 +185,25 @@ class Store:
         with self._lock:
             self._db.execute(sql, params)
             self._db.commit()
+
+    def group_settings(self, chat_id: int) -> dict:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM group_settings WHERE chat_id=?", (chat_id,)).fetchone()
+        return dict(row) if row else {"chat_id": chat_id, "rules": "", "welcome_enabled": 1}
+
+    def set_group_rules(self, chat_id: int, rules: str):
+        self._write(
+            """INSERT INTO group_settings(chat_id, rules) VALUES(?,?)
+               ON CONFLICT(chat_id) DO UPDATE SET rules=excluded.rules""",
+            (chat_id, rules),
+        )
+
+    def set_group_welcome(self, chat_id: int, enabled: bool):
+        self._write(
+            """INSERT INTO group_settings(chat_id, welcome_enabled) VALUES(?,?)
+               ON CONFLICT(chat_id) DO UPDATE SET welcome_enabled=excluded.welcome_enabled""",
+            (chat_id, int(enabled)),
+        )
 
     def touch_user(self, user_id: int, username: str = None, first_name: str = None):
         now = time.time()
