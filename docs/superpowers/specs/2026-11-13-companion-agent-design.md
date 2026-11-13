@@ -1,6 +1,7 @@
 # omini AI — Qurilma boshqaruv agenti (companion) dizayni
 
-Sana: 2026-11-13 · Holat: tasdiqlangan dizayn, kod yozilmagan
+Sana: 2026-11-13 · Holat: 1-2-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
+`agent.py`), 3-4-bosqichlar navbatda
 
 ## 1. Maqsad
 
@@ -76,6 +77,9 @@ kanal `pending` holatida qoladi (buyruq olmaydi), noto'g'ri `bind` bo'lsa bot ka
 
 `v` mos kelmasa ikkala tomon ham kadarni tushirib yuborib, log yozadi.
 
+`/get` va `/put` fayl mazmunini `b64` maydonida (base64, `encoding: "base64"`)
+oladi — shunda bitta JSON kadr yetadi va alohida oqim mexanizmi kerak bo'lmaydi.
+
 ## 5. Pairing va xavfsizlik modeli
 
 **Kalit printsip: botda doimiy holat saqlanmaydi.** Render Free har restart'da
@@ -124,9 +128,10 @@ Termux: `/sdcard`). Har bir yo'l uchun ketma-ket tekshiruv:
 
 Har kanalga bir vaqtda bitta buyruq; tez amallar (`ls /cat /stat /find /tree /disk`)
 10 s, sekin amallar (`cp /mv /get /put /write`) 60 s ichida tugashi kerak; `/ls` 60 joy;
-`/cat` 3800 belgi (offset bilan davom ettiriladi); `/find` 200 natija; `/get` 25 MB
-(Telegram bot upload chegarasidan past); foydalanuvchiga 5 qurilma; `/pair` da
-10 daqiqada 5 marta xato kod urinishi.
+`/cat` 3800 belgi (offset bilan davom ettiriladi); `/find` 200 natija; `/get` 8 MB
+(fayl base64 ko'rinishida bitta JSON kadrda uzatiladi va kadr ~1.37 barobar
+kengayadi — Telegramning 50 MB chegarasidan ancha past); foydalanuvchiga 5 qurilma;
+`/pair` da 10 daqiqada 5 marta xato kod urinishi.
 
 ## 6. Buyruqlar
 

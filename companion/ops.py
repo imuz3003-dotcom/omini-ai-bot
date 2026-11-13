@@ -17,7 +17,9 @@ MAX_CAT_CHARS = 3800
 MAX_FIND_RESULTS = 200
 MAX_TREE_LINES = 200
 MAX_TREE_DEPTH = 3
-MAX_GET_BYTES = 25 * 1024 * 1024
+# Fayl base64 ko'rinishida bitta JSON kadrda uzatiladi (kadr ~1.37 barobar
+# kengayadi), shuning uchun chegara Telegramning 50 MB'idan ancha past.
+MAX_GET_BYTES = 8 * 1024 * 1024
 
 # Rad etilgan yo'llar `*` bilan yoziladi: `*` Python'ning fnmatch'ida katalog
 # bo'lgichlaridan ham o'tadi, shuning uchun bir andoza katalogning o'zini va
