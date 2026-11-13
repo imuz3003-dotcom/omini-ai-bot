@@ -63,6 +63,11 @@ def toggle_done(value) -> str:
 
 TOGGLE_ARGS = {"on": 1, "1": 1, "yok": 1, "yoqilsin": 1, "off": 0, "0": 0, "ochir": 0, "o'chir": 0, "uchir": 0}
 
+# Oqimli javob tormozi: Telegram bir xabarni ~1s'da ko'p edit qilib bo'lmaydi.
+STREAM_EDIT_INTERVAL = 1.2
+STREAM_EDIT_GROWTH = 120
+STREAM_MESSAGE_LIMIT = 3800
+
 
 def btn(text: str, data: str = None, url: str = None):
     return InlineKeyboardButton(text=text, callback_data=data, url=url)
@@ -165,25 +170,82 @@ def drop_search(user_id: int) -> dict:
     return session
 
 
+async def stream_reply(message, session, prompt: str, user_id: int, markup=None):
+    """Javobni qism-qism ko'rsatadi: kelgan matn bitta xabarda edit qilinib boradi."""
+    send = message.reply if message.chat.type != "private" else message.answer
+    msg = None
+    shown = ""
+    full = ""
+    last_edit = 0.0
+    try:
+        async for piece in core.stream_text(session["chat"], prompt):
+            full += piece
+            grown = len(full) - len(shown)
+            if msg is None:
+                msg = await send(full)
+            elif grown >= STREAM_EDIT_GROWTH and len(full) <= STREAM_MESSAGE_LIMIT \
+                    and time.monotonic() - last_edit >= STREAM_EDIT_INTERVAL:
+                await msg.edit_text(full)
+            else:
+                continue
+            shown = full
+            last_edit = time.monotonic()
+    except BaseException:
+        if msg is not None:
+            try:
+                await msg.delete()
+            except TelegramAPIError:
+                pass
+        raise
+    if msg is None:
+        return None, None
+    chunks = core.html_chunks(full)
+    if chunks[0] != shown:
+        try:
+            await msg.edit_text(chunks[0], parse_mode="HTML")
+        except TelegramAPIError:
+            try:
+                await msg.edit_text(core.strip_markdown(chunks[0])[:4000])
+            except TelegramAPIError:
+                pass
+    core.store.track_msg(user_id, msg.message_id)
+    last = msg
+    for index, chunk in enumerate(chunks[1:], start=1):
+        keyboard = markup if index == len(chunks) - 1 else None
+        try:
+            last = await send(chunk, reply_markup=keyboard, parse_mode="HTML")
+        except TelegramAPIError:
+            last = await send(core.strip_markdown(chunk)[:4000], reply_markup=keyboard)
+        core.store.track_msg(user_id, last.message_id)
+    return full, last
+
+
 async def ask_ai(message, prompt: str, user_id: int, markup=None):
     """Suhbat sessiyasi orqali javob oladi, xotiraga yozadi va yuboradi."""
     async with keep_typing(message.chat.id):
         session = ensure_session(user_id)
         core.store.add_message(user_id, "user", prompt)
-        try:
-            response = await asyncio.to_thread(session["chat"].send_message, prompt)
-        except Exception as error:
-            if not session.get("search"):
-                raise
-            logging.warning("Sessiyada web-search xatosi, o'chirilib qayta uriladi: %s", error)
-            session = drop_search(user_id)
-            response = await asyncio.to_thread(session["chat"].send_message, prompt)
-
-        answer = core.extract_text(response) or "Kechirasiz, javob shakllanmadi."
+        answer = None
+        sent = None
+        if not session.get("search"):
+            try:
+                answer, sent = await stream_reply(message, session, prompt, user_id, markup)
+            except Exception as error:
+                logging.warning("Oqimli javob yutildi, bitta xabarga qaytamiz: %s", error)
+        if answer is None:
+            try:
+                response = await asyncio.to_thread(session["chat"].send_message, prompt)
+            except Exception as error:
+                if not session.get("search"):
+                    raise
+                logging.warning("Sessiyada web-search xatosi, o'chirilib qayta uriladi: %s", error)
+                session = drop_search(user_id)
+                response = await asyncio.to_thread(session["chat"].send_message, prompt)
+            answer = core.extract_text(response) or "Kechirasiz, javob shakllanmadi."
+            sources = core.extract_sources(response) if session.get("search") else []
+            sent = await send_long(message, answer, user_id, markup=markup, sources=sources)
         core.store.add_message(user_id, "model", answer)
         core.store.bump(user_id)
-        sources = core.extract_sources(response) if session.get("search") else []
-        sent = await send_long(message, answer, user_id, markup=markup, sources=sources)
     return sent
 
 

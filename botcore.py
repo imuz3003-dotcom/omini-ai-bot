@@ -818,6 +818,35 @@ def ask_once(model: str, contents, use_search: bool, system_instruction: str = B
     raise last_error
 
 
+async def stream_text(chat, prompt: str):
+    """Gemini oqimidan matn bo'laklarini bema'ni kutishsiz beradi.
+
+    SDK oqimi sync generator, shuning uchun u thread'da ishlaydi va bo'laklar
+    queue orqali event loop'ga uzatiladi.
+    """
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue()
+
+    def worker():
+        try:
+            for chunk in chat.send_message_stream(prompt):
+                piece = getattr(chunk, "text", None)
+                if piece:
+                    loop.call_soon_threadsafe(queue.put_nowait, piece)
+        except BaseException as error:
+            loop.call_soon_threadsafe(queue.put_nowait, error)
+        loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    loop.run_in_executor(None, worker)
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 def translate_prompt_to_english(prompt_text: str, model: str) -> str:
     result = ""
     try:

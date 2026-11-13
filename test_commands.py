@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 os.environ["BOT_TOKEN"] = os.environ.get("BOT_TOKEN", "123456:AAtest-token")
@@ -47,6 +48,7 @@ class FakeSession:
     def __init__(self):
         self.calls = []
         self._mid = 1000
+        self._texts = {}
 
     async def __call__(self, bot, method, timeout=None):
         name = type(method).__name__
@@ -58,14 +60,21 @@ class FakeSession:
         self.calls.append((name, payload))
         if name == "SendMessage":
             self._mid += 1
-            return {
+            self._texts[self._mid] = payload.get("text", "")
+            return types.Message.model_validate({
                 "message_id": self._mid,
                 "date": int(time.time()),
                 "chat": {"id": payload.get("chat_id", 1), "type": payload.get("chat_type", "private")},
                 "from": {"id": 123456, "is_bot": True, "first_name": "omini"},
-            }
+            }, context={"bot": bot})
+        if name == "EditMessageText":
+            if self._texts.get(method.message_id) == method.text:
+                # Telegram o'zgarmagan matnni edit qilishni rad etadi
+                raise TelegramBadRequest(method=method, message="message is not modified")
+            self._texts[method.message_id] = method.text
+            return True
         if name in ("DeleteMessage", "BanChatMember", "AnswerCallbackQuery", "SendChatAction",
-                    "EditMessageText", "DeleteChatMessage"):
+                    "DeleteChatMessage"):
             return True
         return {"ok": True}
 
@@ -508,6 +517,115 @@ class GroupWelcomeRules(unittest.IsolatedAsyncioTestCase):
         await self.feed("/rules")
         self.assertEqual(self.sent(), "")
         self.assertIn("BanChatMember", self.session.names())
+
+
+class FakeChat:
+    """Gemini chat sessiyasi o'rniga: faqat bitta-yuborish yo'lini ishlatadi."""
+
+    def __init__(self, text="Zaxira javob"):
+        self.text = text
+        self.prompts = []
+
+    def send_message(self, prompt):
+        self.prompts.append(prompt)
+        return SimpleNamespace(text=self.text)
+
+
+def chunks_stream(pieces=None, error=None, fail_after=None):
+    """core.stream_text o'rniga: berilgan bo'laklarni oqim qilib qaytaradi."""
+
+    async def gen(chat, prompt):
+        for index, piece in enumerate(pieces or []):
+            if error is not None and index == fail_after:
+                raise error
+            yield piece
+        if error is not None and fail_after is None:
+            raise error
+
+    return gen
+
+
+class StreamingReply(unittest.IsolatedAsyncioTestCase):
+    """Javob qism-qism ko'rsatilsa, foydalanuvchi birinchi belgilarni kutmaydi."""
+
+    async def asyncSetUp(self):
+        self.store = app.core.Store(":memory:")
+        self.addCleanup(lambda: self.store._db.close())
+        self.enterContext(patch.object(app.core, "store", self.store))
+        self.session = FakeSession()
+        self.enterContext(patch.object(app.bot, "session", self.session))
+        self.chat = FakeChat()
+        self.enterContext(patch.object(app, "ensure_session", lambda uid, fresh=False: {"chat": self.chat, "search": False}))
+        self.enterContext(patch.object(app, "STREAM_EDIT_INTERVAL", 0))
+
+    async def feed(self, text="salom"):
+        update = types.Update.model_validate(update_of(text, user_id=USER, chat_id=USER), context={"bot": app.bot})
+        await app.dp.feed_update(app.bot, update)
+
+    def sends(self):
+        return [p.get("text", "") for p in (payload for name, payload in self.session.calls if name == "SendMessage")]
+
+    def edits(self):
+        return [p for name, p in self.session.calls if name == "EditMessageText"]
+
+    async def test_first_message_shown_before_answer_is_complete(self):
+        pieces = [f"qism{i} " + "a" * 200 for i in range(3)]
+        pieces[-1] = "**qism2** " + "a" * 200
+        self.enterContext(patch.object(app.core, "stream_text", chunks_stream(pieces)))
+        await self.feed()
+        self.assertEqual(len(self.sends()), 1, "javob bitta xabarda oqishi kerak")
+        self.assertLess(len(self.sends()[0]), sum(len(p) for p in pieces), "birinchi xabar to'liq javabni kutib yubordi")
+        self.assertGreaterEqual(len(self.edits()), 2, "oqim davomida xabar edit qilinmadi")
+        self.assertIn("qism2", self.edits()[-1]["text"])
+        self.assertEqual(self.edits()[-1]["parse_mode"], "HTML")
+        self.assertIn("<b>qism2</b>", self.edits()[-1]["text"])
+
+    async def test_long_answer_finishes_in_second_message(self):
+        pieces = [f"{i:03d}" + "b" * 100 for i in range(60)]
+        self.enterContext(patch.object(app.core, "stream_text", chunks_stream(pieces)))
+        await self.feed()
+        self.assertEqual(len(self.sends()), 2, "juda uzun javob ikkinchi xabarga o'tmadi")
+        self.assertIn("000", self.edits()[-1]["text"])
+        self.assertIn("059", self.sends()[1])
+
+    async def test_short_plain_answer_is_not_sent_twice(self):
+        # yakuniy HTML edit ko'rsatilgan matn bilan bir xil — Telegram "not modified" deydi
+        pieces = ["Qisqa javob. " + "e" * 200]
+        self.enterContext(patch.object(app.core, "stream_text", chunks_stream(pieces)))
+        await self.feed()
+        self.assertEqual(len(self.sends()), 1, "qisqa javob ikki marta yuborildi")
+        self.assertEqual(self.chat.prompts, [], "zaxira yo'li bekor ishga tushdi")
+
+    async def test_stop_cancels_stream_and_deletes_half_answer(self):
+        hold = asyncio.Event()
+
+        async def stalled(chat, prompt):
+            yield "yarim javob " + "g" * 200
+            await hold.wait()
+
+        self.enterContext(patch.object(app.core, "stream_text", stalled))
+        task = asyncio.create_task(self.feed())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        self.assertIn("DeleteMessage", self.session.names(), "to'xtatilganda yarim xabar qoldi")
+        self.assertEqual(self.chat.prompts, [], "to'xtatilgan so'rov zaxira yo'liga tushdi")
+
+    async def test_stream_failure_falls_back_to_single_send(self):
+        self.enterContext(patch.object(app.core, "stream_text", chunks_stream(error=RuntimeError("oqim uzildi"))))
+        await self.feed()
+        self.assertEqual(self.chat.prompts, ["salom"], "zaxira yo'li Gemini'ga so'rov yubormadi")
+        self.assertIn("Zaxira javob", "\n".join(self.sends()))
+        self.assertNotIn("", self.sends(), "bo'sh oqim xabari foydalanuvchida qoldi")
+
+    async def test_half_streamed_answer_is_deleted_before_fallback(self):
+        pieces = ["yarim qolgan javob " + "c" * 200, "yana bir bo'lak " + "d" * 200]
+        self.enterContext(
+            patch.object(app.core, "stream_text", chunks_stream(pieces, error=RuntimeError("oqim uzildi"), fail_after=1))
+        )
+        await self.feed()
+        self.assertIn("DeleteMessage", self.session.names(), "yarim ko'rinib turgan xabar o'chirilmadi")
+        self.assertIn("Zaxira javob", "\n".join(self.sends()))
 
 
 if __name__ == "__main__":
