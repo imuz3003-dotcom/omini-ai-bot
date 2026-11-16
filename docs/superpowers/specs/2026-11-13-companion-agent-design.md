@@ -133,7 +133,9 @@ Termux: `/sdcard`). Har bir yo'l uchun ketma-ket tekshiruv:
 2. `Path.resolve(strict=False)` — nuqtalar, `..` va qo'sh bo'linishlar yechiladi.
 3. `resolved.is_relative_to(root)` — ildizdan tashqariga chiqsa `⛔ ruxsat yo'q`.
 4. Har bir yo'l bo'lagi `os.path.islink()` — `symlink`/reparse orqali chiqish rad etiladi.
-5. `deny` glob ro'yxati (standart: `**/.ssh/**`, `**/.aws/**`, `**/User Data/**`, `**/NTUSER.DAT`) — mos kelsa `⛔`.
+5. `deny` glob ro'yxati (`fnmatch` uslubi: `*/.ssh`, `*/.ssh/*`, `*/.aws`,
+   `*/.aws/*`, `*/User Data`, `*/User Data/*`, `*/NTUSER.DAT`, `*/ntuser.dat.LOG*`)
+   — mos kelsa `⛔`.
 6. `/rm` uchun qo'shimcha: obyekt fayl bo'lishi shart (`is_file()`), katalog bo'lsa rad.
 
 ### Limitlar
@@ -210,14 +212,16 @@ ham yashirmaydi: `err` kadri konsolga `!! Bot: …` bo'lib chiqadi.
 `agent.json` (Windows: `%APPDATA%\omini-agent\agent.json`, Termux: `~/.omini/agent.json`):
 
 ```json
-{"bot_url": "https://omini-ai-bot.onrender.com", "agent_id": "…hex…",
- "owner_user_id": 8692018182, "bind": "…hex…", "name": "desk-pc",
- "roots": ["C:/Users/User"], "deny": ["**/.ssh/**"]}
+{"bot_url": "https://omini-ai-bot.onrender.com", "agent_id": "…32 hex…",
+ "owner_user_id": 8692018182, "bind": "…64 hex…", "name": "desk-pc",
+ "roots": ["C:\\Users\\User"], "deny": ["*/.ssh", "*/.ssh/*", "…"]}
 ```
 
-`DEVICE_SECRET` Render env'iga qo'shiladi (`render.yaml`ga qiymati yozilmaydi,
-`sync: false`). Birinchi ishga tushirishda `bot_url` so'raladi yoki
-`OMINI_BOT_URL` muhit o'zgaruvchisidan olinadi.
+`DEVICE_SECRET` Render env'iga qo'shiladi (`render.yaml`da `sync: false` — qiymat
+repositoriyaga tushmaydi). Birinchi ishga tushirishda `bot_url` va ildiz `--url` /
+`--root` argumentlaridan olinadi va `agent.json`ga yoziladi; keyingi qo'shilishda
+argumentsiz ham ishlaydi. `name` Windows'da `COMPUTERNAME`, Termux'da `qurilma`
+bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
 
 ## 9. Testlar
 
@@ -254,10 +258,10 @@ ham yashirmaydi: `err` kadri konsolga `!! Bot: …` bo'lib chiqadi.
    `pump`, config va `agent.json`ga `bind` saqlash. (`6fdbef0`)
 3. ✅ `devicehub.py` + aiohttp marshrutlari + `bot.py` handlerlari — pairing kodlari,
    HMAC `bind`, `run()` + timeout, `/pair /device /unpair /cd /ls /cat /qidir /tree
-   /disk /stat /mk /write /mv /cp /rm /get /put`.
-4. ⏳ Ishga tushirish hujjati: `DEVICE_SECRET` qo'shish (Render env + `render.yaml`
-   `sync: false`), `python companion/agent.py`, Windows uchun `start_agent.bat`,
-   Termux uchun `pkg install python` ko'rsatmasi.
+   /disk /stat /mk /write /mv /cp /rm /get /put`. (`1e05933`)
+4. ✅ Ishga tushirish hujjati: `docs/companion-agent.md` (Windows + Termux + xato
+   jadvali), `start_agent.bat`, `render.yaml`ga `DEVICE_SECRET` (`sync: false`) —
+   qiymatni dashboard'da yaratish foydalanuvchining ishi.
 
 ## 11. Qabul qilingan zaifliklar
 
