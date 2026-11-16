@@ -11,6 +11,8 @@ Ishga tushirish:  python -m unittest discover -s . -p "test_*.py"
 
 import asyncio
 import base64
+import contextlib
+import itertools
 import json
 import os
 import shutil
@@ -18,6 +20,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from companion import agent, ops, protocol  # noqa: E402
@@ -207,6 +211,56 @@ class BindState(unittest.TestCase):
         self.assertIsNone(agent.handle_frame(self.state, protocol.result_ok("x", {})))
 
 
+class BindingRevoked(unittest.TestCase):
+    """`/unpair` yoki o'zgargan `DEVICE_SECRET`dan keyin agent o'z-o'zidan tuzaladi.
+
+    Nima uchun kerak: bot bindingni bekor qilsa, agent eski `bind`ni saqlab
+    qolgani uchun abadiy «ro'yxatda yo'q» deb rad etilardi — foydalanuvchi esa
+    agentni o'chirib-qayta yoqishga majbur bo'lardi.
+    """
+
+    def setUp(self):
+        self.base = Path(tempfile.mkdtemp(prefix="omini_agent_"))
+        self.root = self.base / "root"
+        self.root.mkdir()
+        self.state = bound_state(self, self.root)
+
+    def tearDown(self):
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def test_reset_binding_clears_and_persists(self):
+        agent.reset_binding(self.state)
+        self.assertFalse(self.state.bound)
+        self.assertIsNone(agent.load_config(self.state.path)["bind"])
+        self.assertIsNone(agent.load_config(self.state.path)["owner_user_id"])
+
+    def test_revoked_close_code_drops_the_binding(self):
+        # 4401 = «ro'yxatda yo'q/imzo yaroqsiz», 4403 = «/unpair» — devicehub'dagi
+        # tarmoq kontrakti, shuning uchun bu yerda qo'lda yozilgan.
+        for code in (4401, 4403):
+            state = bound_state(self, self.root)
+            agent.on_closed(state, SimpleNamespace(close_code=code))
+            self.assertFalse(state.bound, f"close_code={code}")
+
+    def test_ordinary_close_keeps_the_binding(self):
+        for code in (None, 1000, 4408, 4409):
+            state = bound_state(self, self.root)
+            agent.on_closed(state, SimpleNamespace(close_code=code))
+            self.assertTrue(state.bound, f"close_code={code}")
+
+    def test_socket_without_close_code_is_not_a_crash(self):
+        agent.on_closed(self.state, object())
+        self.assertTrue(self.state.bound)
+
+
+class FakeMessage:
+    """aiohttp `async for` WSMessage qaytaradi (matn `.data`da) — shu shakl."""
+
+    def __init__(self, data):
+        self.type = 1  # WSMsgType.TEXT
+        self.data = data
+
+
 class FakeSocket:
     """WebSocket o'rniga: kelgan qatorlarni beradi, yuborilganlarni yozib oladi."""
 
@@ -219,7 +273,7 @@ class FakeSocket:
 
     async def _rows(self):
         for row in self.incoming:
-            yield row
+            yield FakeMessage(row)
 
     async def send_str(self, text):
         self.sent.append(json.loads(text))
@@ -264,6 +318,59 @@ class FramePump(unittest.TestCase):
         socket = self.pump([protocol.encode(protocol.bound("beef", 42))])
         self.assertEqual(socket.sent, [])
         self.assertEqual(agent.load_config(self.state.path)["bind"], "beef")
+
+    def test_bot_refusal_is_echoed_to_the_operator(self):
+        """Bot kanalni yopib «/pair kodini kiriting» desa, odam buni ko'rishi shart."""
+        err = protocol.channel_error("Bu qurilma ro'yxatda yo'q — Telegramda /pair kodini kiriting.")
+        with mock.patch("builtins.print") as echoed:
+            self.pump([protocol.encode(err)])
+        text = " ".join(str(call) for call in echoed.call_args_list)
+        self.assertIn("/pair kodini kiriting", text)
+
+
+class ServeRetry(unittest.IsolatedAsyncioTestCase):
+    """`serve` — botga qayta-ulinish tartibi.
+
+    Nima uchun kerak: ro'yxatdan o'tmagan agent kanalni birinchi sekuntda
+    yo'qotadi va oraliq bo'lmasa Render'dagi bitta free instansiyani zarba
+    qiladi (e2e tekshiruvda 4 sekundda 83 ulanish).
+    """
+
+    async def drive(self, durations):
+        clock = {"t": 0.0}
+        delays = []
+        enough = asyncio.Event()
+        lengths = itertools.cycle(durations)
+
+        async def connect(_state):
+            clock["t"] += next(lengths)
+
+        async def sleep(delay):
+            delays.append(delay)
+            clock["t"] += delay
+            if len(delays) == len(durations):
+                enough.set()
+            await asyncio.sleep(0)
+
+        task = asyncio.create_task(agent.serve(
+            None, connect=connect, sleep=sleep, now=lambda: clock["t"]))
+        try:
+            await asyncio.wait_for(enough.wait(), timeout=2.0)
+        finally:
+            # Boshqa holatda `serve` cheksiz aylanadi: to'xtatish shart.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        return delays[:len(durations)]
+
+    async def test_short_sessions_back_off_exponentially(self):
+        delays = await self.drive([0.0] * 5)
+        self.assertEqual(delays, [1.0, 2.0, 4.0, 8.0, 16.0])
+
+    async def test_a_long_session_resets_the_wait(self):
+        stable = agent.STABLE_SESSION_SECONDS + 5
+        delays = await self.drive([0.0, 0.0, stable, 0.0])
+        self.assertEqual(delays, [1.0, 2.0, 1.0, 1.0])
 
 
 if __name__ == "__main__":

@@ -236,6 +236,19 @@ class ListOperations(unittest.TestCase):
         with self.assertRaises(ValueError):
             ops.cat(sandbox(self.root), "a.txt", offset=-1)
 
+    def test_cat_next_lands_on_a_character_boundary(self):
+        # Har biri 3 bayt bo'lgan belgi: 3800 baytlik oynaning oxiri belgini ikki bo'lakka
+        # bo'lib, keyingi `/cat` o'rtadan boshlanib ketmasin — offset.shart shu.
+        text = "’" * 2000
+        (self.root / "kop.txt").write_text(text, encoding="utf-8")
+        sb = sandbox(self.root)
+        first = ops.cat(sb, "kop.txt")
+        self.assertTrue(first["truncated"])
+        self.assertEqual(first["next"], 3798)  # 1266 ta to'liq belgi x 3 bayt
+        rest = ops.cat(sb, "kop.txt", offset=first["next"])
+        self.assertEqual(rest["text"], "’" * 734)
+        self.assertFalse(rest["truncated"])
+
     def test_cat_detects_binary(self):
         result = ops.cat(sandbox(self.root), "empty.bin")
         self.assertTrue(result["binary"])

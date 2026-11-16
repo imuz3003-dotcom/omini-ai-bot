@@ -36,7 +36,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bot as app  # noqa: E402
+import devicehub  # noqa: E402
 from aiogram import types  # noqa: E402
+from aiogram.exceptions import TelegramBadRequest  # noqa: E402
 
 ADMIN = app.ADMIN_ID
 USER = 7896336878  # foydalanuvchi sinovdan o'tkazgan hisob (noto'g'ri bloklangan edi)
@@ -73,6 +75,16 @@ class FakeSession:
                 raise TelegramBadRequest(method=method, message="message is not modified")
             self._texts[method.message_id] = method.text
             return True
+        if name == "SendDocument":
+            self._mid += 1
+            return types.Message.model_validate({
+                "message_id": self._mid,
+                "date": int(time.time()),
+                "chat": {"id": payload.get("chat_id", 1), "type": "private"},
+                "from": {"id": 123456, "is_bot": True, "first_name": "omini"},
+                "document": {"file_id": "sent-1", "file_unique_id": "sent-u",
+                             "file_name": getattr(payload.get("document"), "filename", "f")},
+            }, context={"bot": bot})
         if name in ("DeleteMessage", "BanChatMember", "AnswerCallbackQuery", "SendChatAction",
                     "DeleteChatMessage"):
             return True
@@ -626,6 +638,157 @@ class StreamingReply(unittest.IsolatedAsyncioTestCase):
         await self.feed()
         self.assertIn("DeleteMessage", self.session.names(), "yarim ko'rinib turgan xabar o'chirilmadi")
         self.assertIn("Zaxira javob", "\n".join(self.sends()))
+
+
+class FakeHub:
+    """DeviceHub'ning handlerlarga kerak bo'lgan qismi — chaqiruvlarni yozib boradi."""
+
+    def __init__(self):
+        self.calls = []
+        self.results = {}
+        self.error = None
+        self.offline = False
+
+    def _fail(self):
+        if self.error:
+            raise devicehub.DeviceError(self.error)
+
+    def pair(self, user_id, code):
+        self._fail()
+        self.calls.append(("pair", user_id, code))
+        return {"agent_id": "a" * 32, "name": "desk-pc", "root": "C:/Users/me",
+                "cwd": "C:/Users/me", "online": not self.offline}
+
+    async def run(self, user_id, op, timeout=None, **args):
+        self.calls.append((op, args))
+        self._fail()
+        return self.results.get(op, {})
+
+    def devices_of(self, user_id):
+        return []
+
+    def cwd_of(self, user_id):
+        self._fail()
+        return "C:/Users/me"
+
+    def select(self, user_id, ref):
+        self._fail()
+        return {"name": ref, "cwd": "C:/Users/me"}
+
+    def unpair(self, user_id, ref):
+        self._fail()
+        return {"name": ref}
+
+
+def document_update(caption, user_id=USER, file_size=5):
+    message = {
+        "message_id": 1,
+        "date": int(time.time()),
+        "chat": {"id": user_id, "type": "private"},
+        "from": {"id": user_id, "is_bot": False, "first_name": "Test", "username": "tester"},
+        "document": {
+            "file_id": "doc-1", "file_unique_id": "doc-u",
+            "file_name": "salom.txt", "mime_type": "text/plain", "file_size": file_size,
+        },
+        "caption": caption,
+    }
+    return {"update_id": int(time.time() * 1000) % 10_000_000, "message": message}
+
+
+class DeviceCommands(unittest.IsolatedAsyncioTestCase):
+    """Qurilma buyruqlari dispatcher DARAJASIDA.
+
+    Nima uchun aynan bu yerda: `/put` hujjat caption'i bilan keladi — agar u
+    `F.document` (Gemini tahlili) handleridan oldin turmasa, fayl qurilmaga
+    yozilmay AI'ga ketardi. Shuningdek guruh chatida hech qanday qurilma
+    buyrug'i bajarilmasligi kerak.
+    """
+
+    def setUp(self):
+        self.session = FakeSession()
+        app.bot.session = self.session
+        self.hub = FakeHub()
+        self.enterContext(patch.object(app, "HUB", self.hub))
+
+        async def fake_download(file):
+            return b"salom"
+
+        self.enterContext(patch.object(app, "download_tg_file", fake_download))
+        app.core.store.unban(USER)
+
+    async def typed(self, text, chat_id=None, chat_type="private"):
+        payload = update_of(text, user_id=USER, chat_id=chat_id or USER, chat_type=chat_type)
+        await app.dp.feed_update(app.bot, types.Update.model_validate(payload, context={"bot": app.bot}))
+
+    def replies(self, chat_id=USER):
+        return " ".join(self.session.texts(chat_id))
+
+    async def test_pair_reaches_the_hub(self):
+        await self.typed("/pair 123456")
+        self.assertEqual(self.hub.calls, [("pair", USER, "123456")])
+        self.assertIn("desk-pc", self.replies())
+        self.assertNotIn("Bunday buyruq yo'q", self.replies())
+
+    async def test_pair_says_nothing_about_being_offline_when_it_worked(self):
+        await self.typed("/pair 123456")
+        self.assertNotIn("onlayn emas", self.replies())
+
+    async def test_pair_warns_when_the_channel_is_missing(self):
+        """Kod yaroqli, lekin agent kanali topilmadi: ogohlantirish ko'rsatiladi,
+        soxta «hammasi joyida» javobi emas."""
+        self.hub.offline = True
+        await self.typed("/pair 123456")
+        self.assertIn("onlayn emas", self.replies())
+
+    async def test_ls_renders_entries_from_the_device(self):
+        self.hub.results["ls"] = {
+            "cwd": "C:/Users/me/Documents", "truncated": False,
+            "entries": [
+                {"name": "Arxiv", "dir": True, "size": 0, "mtime": 0},
+                {"name": "hisobot.txt", "dir": False, "size": 2048, "mtime": 0},
+            ],
+        }
+        await self.typed("/ls Documents")
+        self.assertEqual(self.hub.calls, [("ls", {"path": "Documents"})])
+        text = self.replies()
+        self.assertIn("C:/Users/me/Documents", text)
+        self.assertIn("Arxiv/", text)
+        self.assertIn("hisobot.txt — 2.0 KB", text)
+
+    async def test_agent_error_text_reaches_the_user(self):
+        self.hub.error = "Denied: ruxsat yo'q: C:/Windows ildizdan tashqarida"
+        await self.typed("/rm C:/Windows/x.txt")
+        self.assertIn("ildizdan tashqarida", self.replies())
+        self.assertNotIn("Bunday buyruq yo'q", self.replies())
+
+    async def test_group_chat_never_reaches_a_device(self):
+        await self.typed("/ls", chat_id=-100123, chat_type="group")
+        await self.typed("/pair 123456", chat_id=-100123, chat_type="group")
+        self.assertEqual(self.hub.calls, [])
+
+    async def test_put_caption_goes_to_the_device_not_the_ai(self):
+        self.hub.results["put"] = {"path": "C:/Users/me/notes.txt", "bytes": 5}
+        await app.dp.feed_update(app.bot, types.Update.model_validate(
+            document_update("/put notes.txt"), context={"bot": app.bot}))
+        self.assertEqual(self.hub.calls, [("put", {"path": "notes.txt", "b64": "c2Fsb20="})])
+        self.assertIn("notes.txt", self.replies())
+
+    async def test_put_over_the_transfer_limit_is_refused_before_upload(self):
+        self.session.calls.clear()
+        await app.dp.feed_update(app.bot, types.Update.model_validate(
+            document_update("/put katta.bin", file_size=9 * 1024 * 1024), context={"bot": app.bot}))
+        self.assertEqual(self.hub.calls, [])
+        self.assertIn("juda katta", self.replies())
+
+    async def test_get_sends_the_decoded_file_back_as_document(self):
+        self.hub.results["get"] = {"path": "C:/Users/me/hisobot.txt", "size": 5,
+                                   "encoding": "base64", "b64": "c2Fsb20="}
+        await self.typed("/get hisobot.txt")
+        sent = [payload for name, payload in self.session.calls if name == "SendDocument"]
+        self.assertEqual(len(sent), 1, "qurilma fayli hujjat bo'lib qaytmadi")
+        self.assertEqual(sent[0]["document"].filename, "hisobot.txt")
+        self.assertEqual(sent[0]["document"].data, b"salom", "base64 qayta ochilmadi")
+        self.assertIn("hisobot.txt", sent[0]["caption"])
 
 
 if __name__ == "__main__":

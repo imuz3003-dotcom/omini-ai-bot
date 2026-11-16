@@ -142,11 +142,16 @@ def cat(sb: Sandbox, path, offset: int = 0) -> dict:
         block = handle.read(MAX_CAT_CHARS + 1)
     binary = b"\x00" in block
     truncated = len(block) > MAX_CAT_CHARS or int(offset) + len(block) < size
+    chunk = block[:MAX_CAT_CHARS]
     if binary:
-        return {"text": "", "offset": int(offset), "size": size, "truncated": truncated, "binary": True}
+        return {"text": "", "offset": int(offset), "next": int(offset) + len(chunk),
+                "size": size, "truncated": truncated, "binary": True}
     return {
-        "text": block[:MAX_CAT_CHARS].decode("utf-8", errors="replace"),
+        "text": chunk.decode("utf-8", errors="replace"),
         "offset": int(offset),
+        # `next` — keyingi o'qishning BAYT offseti. Oyna oxirida yarim qolgan ko'p
+        # baytli belgi hisobga olinmaydi, aks holda davomi o'rtadan buzilib keladi.
+        "next": int(offset) + len(chunk.decode("utf-8", errors="ignore").encode("utf-8")),
         "size": size,
         "truncated": truncated,
         "binary": False,

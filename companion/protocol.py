@@ -10,6 +10,9 @@ import secrets
 
 PROTOCOL_VERSION = 1
 FRAME_TYPES = ("cmd", "res", "hello", "bound", "err", "ping", "pong")
+# /get va /put faylni base64 bilan bitta kadrga joylaydi (8 MB fayl ≈ 11 MB kadr).
+# aiohttpning standart 4 MB chegarasi ikkala tomonda ham ko'tarilishi shart.
+MAX_FRAME_BYTES = 16 * 1024 * 1024
 
 
 class ProtocolError(Exception):

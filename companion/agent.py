@@ -15,6 +15,7 @@ import logging
 import os
 import secrets
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -28,6 +29,9 @@ WS_PATH = "/device/ws"
 REGISTER_PATH = "/device/register"
 BACKOFF_BASE = 1.0
 BACKOFF_CAP = 30.0
+STABLE_SESSION_SECONDS = 60.0
+# Bot bu kod bilan yopadi: «bindinging endi yaroqsiz, qayta /pair yoz».
+REVOKED_CLOSE_CODES = frozenset({4401, 4403})
 
 
 def default_config_path() -> Path:
@@ -95,6 +99,20 @@ class AgentState:
         return ops.Sandbox(roots=roots, deny=deny, cwd=Path(cwd) if cwd else None)
 
 
+def reset_binding(state: AgentState) -> None:
+    """Bot bindingni bekor qildi (`/unpair` yoki imzo yaroqsiz) — jimgina
+    qayta-urilaverish o'rniga yangi `/pair` kodini so'raymiz."""
+    state.config["bind"] = None
+    state.config["owner_user_id"] = None
+    save_config(state.path, state.config)
+
+
+def on_closed(state: AgentState, socket) -> None:
+    """Kanal yopilish sababidan kelib chiqadigan siyosat (tarmoqqa bog'liq emas)."""
+    if getattr(socket, "close_code", None) in REVOKED_CLOSE_CODES:
+        reset_binding(state)
+
+
 def _op_get(sandbox, **args) -> dict:
     result = ops.get(sandbox, **args)
     return {
@@ -156,15 +174,18 @@ def handle_frame(state: AgentState, frame: dict):
 
 
 async def pump(socket, state: AgentState) -> None:
-    async for raw in socket:
+    async for message in socket:
         try:
-            frame = protocol.decode(raw)
+            frame = protocol.decode(message.data)
         except protocol.ProtocolError as error:
             await socket.send_str(protocol.encode(protocol.channel_error(protocol.describe_error(error))))
             continue
         reply = handle_frame(state, frame)
         if reply is not None:
             await socket.send_str(protocol.encode(reply))
+        elif frame["type"] == "err":
+            # Bot kanalni yopishdan oldin sababni yuboradi: uni yashirmaymiz.
+            print(f"!! Bot: {frame['error']}")
 
 
 # --- Ulanish qatlami (tarmoq): sinovda emas, jonli bot bilan tekshiriladi. ---
@@ -192,7 +213,8 @@ async def session(state: AgentState) -> None:
 
     url = ws_url(state.config["bot_url"]) + "?agent_id=" + state.config["agent_id"]
     async with aiohttp.ClientSession() as client:
-        async with client.ws_connect(url, heartbeat=30) as socket:
+        async with client.ws_connect(url, heartbeat=30,
+                                     max_msg_size=protocol.MAX_FRAME_BYTES) as socket:
             await socket.send_str(protocol.encode(protocol.hello(
                 state.config["agent_id"], state.config["name"],
                 bind=state.config.get("bind"), owner_user_id=state.config.get("owner_user_id"))))
@@ -201,21 +223,34 @@ async def session(state: AgentState) -> None:
                 print(f">> Telegram'da /pair {code} yozing (10 daqiqa ichida).")
             print(f">> {state.config['name']} botga ulandi.")
             await pump(socket, state)
+            on_closed(state, socket)
 
 
-async def serve(state: AgentState) -> None:
+async def serve(state: AgentState, connect=session, sleep=asyncio.sleep,
+                now=time.monotonic) -> None:
+    """Qayta-ulinish tartibi: uzilishlar 1s→30s'ga qadar ko'payib boradi.
+
+    Javobsiz qolish xavfi shundaki, bot ro'yxatdagi agent kanalini birinchi
+    sekuntda yopadi — oraliq bo'lmasa bitta Render Free instansiyani zarba
+    qilamiz. Shuning uchun muvaffaqiyatli (uzun) sessiyadan keyingina hisob
+    nolga qaytadi.
+    """
     attempt = 0
     while True:
+        started = now()
         try:
-            await session(state)
-            attempt = 0
+            await connect(state)
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            logging.warning("Ulanish uzildi: %s", error)
+        if now() - started >= STABLE_SESSION_SECONDS:
+            attempt = 0
+            delay = backoff(0)
+        else:
             delay = backoff(attempt)
             attempt += 1
-            logging.warning("Ulanish uzildi (%s), %ss'dan keyin qayta uriladi", error, delay)
-            await asyncio.sleep(delay)
+        await sleep(delay)
 
 
 def main(argv=None) -> int:

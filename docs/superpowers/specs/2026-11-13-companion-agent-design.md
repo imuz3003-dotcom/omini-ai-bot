@@ -105,12 +105,24 @@ deploy/restart'dan keyin hech kim qayta `/pair` yozmaydi.
 4. Foydalanuvchi `/pair 483920` → bot `owner_user_id = from_user.id` bilan `bind`
    hisoblaydi, kutilayotkan kanalga `{"type":"bound","bind":…}` yuboradi, kodni
    o'chiradi. Agent `agent.json`ga yozadi va javoban `✅ "desk-pc" ulandi`.
+   Agar shu paytda kutilayotgan kanal bo'lmasa (agent ulanishni yo'qotgan),
+   bot baribir `✅` yuboradi, lekin tagiga `📴 … onlayn emas` ogohlantirishini
+   qo'shadi — soxta muvaffaqiyat ko'rsatmaydi.
+
+### Binding bekor qilinishi (`/unpair`)
+
+`/unpair` qurilma yozuvini o'chiradi va kanalni `4403` bilan yopadi; eski `bind`
+endi `4401` («ro'yxatda yo'q») bilan rad etiladi. Agent kanal yopilish kodini
+`on_closed()`da ko'radi (`4401`/`4403`) — `agent.json`dan `bind` va
+`owner_user_id`ni o'chirib, keyingi ulanishda yangi kod so'raydi. Shuning uchun
+foydalanuvchi agentni o'chirib-yoqmasdan `/unpair` → `/pair` qilishi mumkin;
+e2e tekshiruvda shu zanjir to'liq ko'rildi.
 
 ### Buyruq paytidagi tekshiruv
 
-`run_command(user_id, op, args, device=None)` faqat `owner_user_id == user_id` bo'lgan
-kanallarni ko'radi. `agent_id`ni bilish yetarli emas: uni yuborish uchun `DEVICE_SECRET`
-kerak, u esa faqat Render'da.
+`HUB.run(user_id, op, timeout=None, **args)` faqat `owner_user_id == user_id`
+bo'lgan qurilmalarni ko'radi. `agent_id`ni bilish yetarli emas: uni yuborish uchun
+`DEVICE_SECRET` kerak, u esa faqat Render'da.
 
 ### Yo'l qorovuli (agentning o'zida, eng oxirgi to'siq)
 
@@ -140,7 +152,7 @@ kengayadi — Telegramning 50 MB chegarasidan ancha past); foydalanuvchiga 5 qur
 | `/ls [yo'l]` | `ls` | nom, hajm, sana; `/`da tugaydigan yo'llar katalog |
 | `/cd [yo'l]` | — | foydalanuvchi+qurilma uchun joriy katalog (bot xotirasida) |
 | `/cat <yo'l> [offset]` | `cat` | matn; binar bo'lsa "binar fayl, `/get` biling" |
-| `/find <nom> [yo'l]` | `find` | glob bo'yicha, 200 natijagacha |
+| `/qidir <nom> [yo'l]` | `find` | glob bo'yicha, 200 natijagacha (`/find` aloqa qidiruviga band) |
 | `/tree [yo'l]` | `tree` | 3 chuqurlik, 200 joy |
 | `/disk` | `disk` | ildiz hajmi/bo'sh joyi |
 | `/stat <yo'l>` | `stat` | hajm, sana,/rejim, havola |
@@ -152,10 +164,22 @@ kengayadi — Telegramning 50 MB chegarasidan ancha past); foydalanuvchiga 5 qur
 | `/get <yo'l>` | `get` | faylni Telegramga yuboradi |
 | `/put <yo'l>` (joylangan hujjat bilan) | `put` | Telegram hujjatini saqlaydi |
 | `/pair <kod>` | — | qurilmani o'ziga bog'laydi |
-| `/devices` | — | bog'langan qurilmalar + holat |
-| `/device` | — | qurilmalar ro'yxati + qaysi biri tanlangan |
+| `/device` | — | qurilmalar ro'yxati + qaysi biri tanlangan (`/devices` alohira buyruq qilinmadi) |
 | `/device <nom\|id>` | — | boshqa qurilmani tanlash (1 ta bo'lsa avtomatik tanlanadi) |
 | `/unpair <nom\|id>` | — | bot ro'yxatidan olib tashlaydi, agentga `reset` buyuradi |
+
+Barcha qurilma buyruqlari **faqat shaxsiy chat'da** ishlaydi (`device_gate`):
+guruhda `/ls` yozilsa bot qurilmaga biror kadr yubormaydi.
+
+`/put` filtri `F.document` + `F.caption.regexp("^/put")` — Telegram captionni
+xabarning o'ziga (`message.caption`) qo'yadi, `message.document.caption`da emas.
+
+### Kadr o'lchami
+
+`/get` va `/put` faylni base64 bilan bitta kadrga joylaydi (8 MB fayl ≈ 11 MB kadr),
+shuning uchun `protocol.MAX_FRAME_BYTES = 16 MiB` ikkala tomonda ham aiohttpga
+beriladi: agentda `ws_connect(max_msg_size=…)`, botda `WebSocketResponse(max_msg_size=…)`.
+Standart 4 MB qiymat qolganda katta fayl sessiyani jimgina yo'q qilardi.
 
 ## 7. Xatolar
 
@@ -170,6 +194,16 @@ Agent har bir amalni `except Exception` bilan tutadi va `{"ok": false, "error":
 
 `/stop` bilan bekor qilinsa yoki kanal uzilsa, kutilayotgan `Future` tozalanadi —
 sizib qolgan buyruq keyinroq o'z-o'zidan javob bermaydi.
+
+### Qayta-ulinish tartibi (agent)
+
+Bot ro'yxatda yo'q yoki imzosi noto'g'ri qurilma kanalini birinchi sekuntda yopadi.
+Agar agent sabrsiz qayta urilsa, bitta Render Free instansiyani zarba qilardi —
+e2e tekshiruvda 4 sekundda 83 ulanish paydo bo'ldi. Shuning uchun `serve()`
+sessiya davomiyligini o'lchaydi: `STABLE_SESSION_SECONDS` (60 s)dan qisqa sessiyalar
+`backoff` 1→2→4→…→30 s ko'payadi, uzun (ya'ni ishlagan) sessiyadan keyin hisob
+nolga qaytadi va 1 s oraliq bilan davom etiladi. Agent kanal yopilish sababini
+ham yashirmaydi: `err` kadri konsolga `!! Bot: …` bo'lib chiqadi.
 
 ## 8. Sozlash
 
@@ -191,29 +225,48 @@ sizib qolgan buyruq keyinroq o'z-o'zidan javob bermaydi.
   `symlink` qochish, `.ssh` o'qish, `/rm` katalogga urinish → hammasi `⛔`;
   `/ls /cat /mk /mv /cp /get /put` → kutilgan natija. `ops.py` sof funksiya bo'lgani
   uchun TDD (RED → GREEN) shu yerda boshlanadi.
-- `test_devicehub.py` — kod bir martaligi va muddati, `bind` HMAC tekshiruvi,
+- `test_devicehub.py` (42 test) — kod bir martaligi va muddati, `bind` HMAC tekshiruvi,
   begona `user_id`ning begona qurilmaga kira olmasligi, timeout xabari,
-  kanal yopilsa `Future` tozalanishi.
-- `test_commands.py`ga 3 ta test (`feed_update` + `FakeSession` orqali) — `/pair`
-  dispatcher'dan o'tadi, `/ls` handleri `run_command`ni chaqiradi, `/rm` katalogni rad etadi.
-- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — hammasi tarmoqsiz, soatsiz.
+  kanal yopilsa `Future` tozalanishi, 5 qurilma chegarasi, xato kod urinishlarini
+  hisoblab foydalanuvchini vaqtincha bloklash.
+- `test_commands.py` → `DeviceCommands` (9 test, `feed_update` + `FakeHub` orqali) —
+  `/pair` dispatcher'dan o'tadi, kanal bo'lmasa `/pair` ogohlantiradi, `/ls` natijasi
+  chiroyli chiqadi, agent xato matni
+  foydalanuvchiga yetadi, guruh chat'i qurilmaga hech qachon tegmaydi, `/put`
+  caption'i qurilmaga `b64` bo'lib boradi, chegaradan ortiq hujjat yuklashdan oldin
+  rad etiladi, `/get` bazani dekodlangan hujjat qilib qaytaradi.
+- `companion/test_agent.py` → `ServeRetry` — qayta-ulinish oraliqlari (1,2,4,8,16)
+  va uzun sessiyadan keyin hisobning nolga qaytishi; `BindingRevoked` — `4401`/`4403`
+  kodli yopilish `bind`ni o'chiradi, oddiy uzilish uni saqlaydi.
+- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 209 test, hammasi
+  tarmoqsiz va soatsiz (`skipped=1` — symlink testi Windows'da admin so'raydi).
+- Bir martalik e2e tekshiruv (kommit qilinmaydi): haqiqiy `aiohttp` server + haqiqiy
+  `agent.serve()` — pairing, `agent.json`ga `bind` yozilishi, `ls/cat/get/mkdir/cd`,
+  ildizdan tashqariga chiqish urinishi (absolyut va nisbiy), begona foydalanuvchi,
+  6 MB fayl `/get` (≈8 MB kadr), `/unpair`dan keyin agentning yangi kod so'rashi va
+  qayta `/pair` bilan `/ls`. Hammasi o'tdi.
 
 ## 10. Bosqichlar (har biri alohida tekshiriladi)
 
-1. `companion/ops.py` + `companion/test_ops.py` — sandbox va fayl amallari. Tarmoq,
-   deploy va env talab qilmaydi.
-2. `companion/protocol.py` + `companion/agent.py` — pairing, WS, reconnect.
-3. `devicehub.py` + `bot.py` handlerlari va marshrutlari.
-4. Ishga tushirish hujjati: `DEVICE_SECRET` qo'shish, `python companion/agent.py`,
-   Windows uchun `start_agent.bat`, Termux uchun `pkg install python` ko'rsatmasi.
+1. ✅ `companion/ops.py` + `companion/test_ops.py` — sandbox va fayl amallari. Tarmoq,
+   deploy va env talab qilmaydi. (`5bbfd62`)
+2. ✅ `companion/protocol.py` + `companion/agent.py` — kadr formati, `handle_frame`,
+   `pump`, config va `agent.json`ga `bind` saqlash. (`6fdbef0`)
+3. ✅ `devicehub.py` + aiohttp marshrutlari + `bot.py` handlerlari — pairing kodlari,
+   HMAC `bind`, `run()` + timeout, `/pair /device /unpair /cd /ls /cat /qidir /tree
+   /disk /stat /mk /write /mv /cp /rm /get /put`.
+4. ⏳ Ishga tushirish hujjati: `DEVICE_SECRET` qo'shish (Render env + `render.yaml`
+   `sync: false`), `python companion/agent.py`, Windows uchun `start_agent.bat`,
+   Termux uchun `pkg install python` ko'rsatmasi.
 
 ## 11. Qabul qilingan zaifliklar
 
 - **Telegram akkaunti = kompyuter kaliti.** Akkaunt o'g'irlansa hujjatlar o'qiladi va
   bitta fayl o'chiriladi; shell bo'lgani uchun emas, zarar cheklangan.
 - **Haqiqiy bekor qilish (revocation) yo'q.** `/unpair` faqat bog'lanishni uzadi;
-  qurilmani abadiy bloklash uchun `DEVICE_SECRET` almashtiriladi va barcha qurilmalar
-  qayta `/pair` yozadi.
+  qurilmani abadiy bloklash uchun `DEVICE_SECRET` almashtiriladi — barcha agentlar
+  `4401` bilan rad etilib `bind`ini o'zi tashlaydi, lekin ular yangi kod so'rab
+  turaveradi: ega qayta `/pair` yozmagunicha hech biri ishlamaydi.
 - **Sandbox — bu agent ichidagi siyosat**, OS darajasidagi jail emas. Agent sizning
   huquqingizda ishlaydi.
 - **Kutilayotgan pairing kodlari va joriy katalog in-memory** — Render restart'ida

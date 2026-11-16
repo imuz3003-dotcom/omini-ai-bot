@@ -4,9 +4,12 @@ Yadro yordamchilari botcore.py da: konfiguratsiya, SQLite, HTML formatlash, AI, 
 """
 
 import asyncio
+import base64
 import io
 import logging
 import os
+import secrets
+import shlex
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
@@ -20,12 +23,19 @@ from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboar
 from aiohttp import web
 
 import botcore as core
+import devicehub
 
 bot = Bot(token=core.BOT_TOKEN)
 dp = Dispatcher()
 ADMIN_ID = core.ADMIN_ID
 BOT_ID = 0
 BOT_URL = "https://t.me/"
+
+# DEVICE_SECRET sozlanmasa har restart'da yangi kalit yasaladi va pairing buziladi:
+# bot ishlashi to'xtamasligi uchun bu ogohlantirish bilan qoyil qo'yiladi.
+if not core.DEVICE_SECRET:
+    logging.warning("DEVICE_SECRET o'rnatilmagan — qurilma pairingi deploy'dan keyin buziladi.")
+HUB = devicehub.DeviceHub(core.DEVICE_SECRET or secrets.token_hex(32))
 
 pending_action: dict = {}
 last_image: dict = {}
@@ -551,6 +561,12 @@ HELP_TEXT = (
     "🧠 <b>Rejimlar</b> — <code>/mode</code>: tarjimon, o'qituvchi, dasturchi, yozuvchi, matematikachi.\n"
     "📝 <b>Eslatmalar</b> — <code>/remember Ismim Muslimbek</code>, <code>/notes</code>, <code>/forget</code>.\n"
     "👥 <b>Odam qo'shish</b> — <code>/add</code> deb yozing, keyin kontakt yuboring (yoki <code>/add 123456789</code>).\n"
+    "💻 <b>Qurilma fayllari</b> — kompyuter yoki telefoningizni <code>/pair 483920</code> bilan ulang "
+    "(kodni qurilmadagi agent ko'rsatadi). Keyin: <code>/ls</code> · <code>/cd Documents</code> · "
+    "<code>/cat fayl.txt</code> · <code>/qidir *.pdf</code> · <code>/tree</code> · <code>/disk</code> · "
+    "<code>/mk</code> · <code>/write</code> · <code>/mv</code> · <code>/cp</code> · <code>/rm</code> · "
+    "<code>/get</code> · <code>/put</code>. Bot faqat siz ruxsat bergan kataloglar ichida ishlaydi, "
+    "katalog o'chirilmaydi. <code>/device</code> — qurilmalar, <code>/unpair nom</code> — olib tashlash.\n"
     "🛑 <b>Bekor qilish</b> — <code>/stop</code> joriy javobni to'xtatadi.\n"
     "⚠️ <b>Intizom</b> — haqoratli so'z birinchi marta ogohlantiradi, ikkinchi marta botdan <b>doimiy</b> bloklaydi: "
     "hech qaysi chatda (guruhlarda ham) yozolmaysiz, blokdani faqat admin ochadi.\n\n"
@@ -1174,6 +1190,411 @@ async def run_action(message, kind: str, command: CommandObject):
         message,
         f"{label} rejimi yoqildi (10 daqiqa).\nEndi <b>fayl, rasm yoki ovoz</b> yuboring — shu amalni bajaraman.",
     )
+
+
+# ------------------------------------------------------ qurilma (companion) buyruqlari
+#
+# Bu blok `hujjatlar` handleridan OLDIN kelishi shart: /put hujjat caption'i bilan
+# keladi va aiogram birinchi mos handler'ni oladi.
+
+
+async def device_gate(message) -> bool:
+    """Buyruq qurilmaga yo'naltirilsa True. Faqat shaxsiy chat: guruhdagi boshqa
+    odam sizning faylingizni so'ramasin, ban va limit ham shu yerda."""
+    if not await preflight(message):
+        return False
+    if message.chat.type != "private":
+        await notify(message, "📱 Qurilma buyruqlari faqat shaxsiy chatda ishlaydi.")
+        return False
+    return True
+
+
+async def device_send(message, op, timeout=None, **args):
+    """Buyruqni foydalanuvchining qurilmasiga yuboradi; xatoni o'zi ko'rsatadi."""
+    try:
+        return await HUB.run(message.from_user.id, op, timeout=timeout, **args)
+    except devicehub.DeviceError as error:
+        await show_device_error(message, error)
+        return None
+
+
+async def show_device_error(message, error) -> None:
+    await notify(message, f"<code>{core.escape_html(str(error))}</code>")
+
+
+def human_size(num) -> str:
+    value = float(num or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(value) < 1024.0 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+
+
+def fit_lines(lines, limit: int = core.CHUNK_LIMIT):
+    """Telegram 4096 belgili xabariga sig'adigan qismi + sig'maganlar soni."""
+    kept, used = [], 0
+    for line in lines:
+        used += len(line) + 1
+        if used > limit:
+            return kept, len(lines) - len(kept)
+        kept.append(line)
+    return kept, 0
+
+
+def path_args(raw: str) -> list:
+    """/mv "eski nom.txt" Arxiv/ — bo'sh joyli yo'llar qo'shtirnoq bilan ajraladi."""
+    try:
+        parts = shlex.split((raw or "").strip(), posix=False)
+    except ValueError:
+        parts = (raw or "").split()
+    return [part.strip('"') for part in parts if part.strip('"')]
+
+
+def base_name(path: str) -> str:
+    normalized = str(path).replace("\\", "/").rstrip("/")
+    return normalized.split("/")[-1] or "fayl"
+
+
+@dp.message(Command("pair"))
+async def cmd_pair(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    code = (command.args or "").strip()
+    if not code:
+        await notify(message, "Namuna: <code>/pair 483920</code>\n"
+                              "6 xonali kodni qurilmadagi agent o'zi ko'rsatadi.")
+        return
+    try:
+        record = HUB.pair(message.from_user.id, code)
+    except devicehub.DeviceError as error:
+        await show_device_error(message, error)
+        return
+    warning = ""
+    if not record["online"]:
+        warning = ("\n\n📴 Lekin qurilma kanali topilmadi — agent endi onlayn emas. "
+                   "Ishga tushiring va ko'rsatilgan yangi kod bilan qayta /pair yozing.")
+    await notify(
+        message,
+        f"✅ <b>{core.escape_html(record['name'])}</b> qurilmangiz bo'lib ulandi.\n"
+        f"Ruxsat etilgan katalog: <code>{core.escape_html(record['root'])}</code>"
+        f"{warning}\n\n"
+        "Davomi: <code>/ls</code> · <code>/cd Documents</code> · <code>/cat fayl.txt</code>",
+    )
+
+
+@dp.message(Command("device"))
+async def cmd_device(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    user_id = message.from_user.id
+    ref = (command.args or "").strip()
+    if ref:
+        try:
+            chosen = HUB.select(user_id, ref)
+        except devicehub.DeviceError as error:
+            await show_device_error(message, error)
+            return
+        await notify(message, f"🎯 Tanlandi: <b>{core.escape_html(chosen['name'])}</b> "
+                              f"(joriy katalog <code>{core.escape_html(chosen['cwd'])}</code>)")
+        return
+    devices = HUB.devices_of(user_id)
+    if not devices:
+        await notify(message, "📱 Sizda ulangan qurilma yo'q.\n"
+                              "1) Qurilmada agentni ishga tushiring;\n"
+                              "2) u ko'rsatgan kodni <code>/pair 483920</code> deb yuboring.")
+        return
+    lines = []
+    for item in devices:
+        mark = "🎯 " if item["active"] else "   "
+        state = "🟢 onlayn" if item["online"] else "⚪ oflayn"
+        lines.append(f"{mark}<b>{core.escape_html(item['name'])}</b> — {state}\n"
+                     f"      <code>{core.escape_html(item['cwd'])}</code>")
+    await notify(message, "📱 Qurilmalaringiz:\n" + "\n".join(lines)
+                 + "\n\nAlmashtirish: <code>/device nom</code> · Olib tashlash: <code>/unpair nom</code>")
+
+
+@dp.message(Command("unpair"))
+async def cmd_unpair(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    ref = (command.args or "").strip()
+    if not ref:
+        await notify(message, "Namuna: <code>/unpair desk-pc</code> (ro'yxat: <code>/device</code>)")
+        return
+    try:
+        record = HUB.unpair(message.from_user.id, ref)
+    except devicehub.DeviceError as error:
+        await show_device_error(message, error)
+        return
+    await notify(
+        message,
+        f"🗑 <b>{core.escape_html(record['name'])}</b> ro'yxatdan olib tashlandi.\n"
+        "Qayta ulash uchun qurilmada agentni <code>--pair</code> bilan ishga tushiring — "
+        "u yangi kod beradi.",
+    )
+
+
+@dp.message(Command("cd"))
+async def cmd_cd(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    user_id = message.from_user.id
+    target = (command.args or "").strip()
+    if not target:
+        try:
+            current = HUB.cwd_of(user_id)
+        except devicehub.DeviceError as error:
+            await show_device_error(message, error)
+            return
+        await notify(message, f"📍 Joriy katalog: <code>{core.escape_html(current)}</code>\n\n"
+                              "Kirish: <code>/cd Documents</code> · Yuqoriga: <code>/cd ..</code>")
+        return
+    try:
+        current = await HUB.change_dir(user_id, target)
+    except devicehub.DeviceError as error:
+        await show_device_error(message, error)
+        return
+    await notify(message, f"📍 Endi: <code>{core.escape_html(current)}</code>")
+
+
+@dp.message(Command("ls"))
+async def cmd_ls(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    data = await device_send(message, "ls", path=(command.args or "").strip() or None)
+    if data is None:
+        return
+    entries = [
+        f"📁 {core.escape_html(e['name'])}/" if e["dir"]
+        else f"📄 {core.escape_html(e['name'])} — {human_size(e['size'])}"
+        for e in data["entries"]
+    ]
+    body = "\n".join(entries) if entries else "(bo'sh katalog)"
+    tail = "\n⚠️ Ro'yxat 60 tasida to'xtadi — <code>/cd</code> bilan kirib boring." if data["truncated"] else ""
+    await notify(message, f"📂 <code>{core.escape_html(data['cwd'])}</code>\n\n{body}{tail}")
+
+
+@dp.message(Command("cat"))
+async def cmd_cat(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    raw = (command.args or "").strip()
+    if not raw:
+        await notify(message, "Namuna: <code>/cat notes.txt</code> · davomi: <code>/cat notes.txt 3800</code>")
+        return
+    parts = raw.rsplit(maxsplit=1)
+    path, offset = raw, 0
+    if len(parts) == 2 and parts[1].isdigit():
+        path, offset = parts[0], int(parts[1])
+    data = await device_send(message, "cat", path=path, offset=offset)
+    if data is None:
+        return
+    if data["binary"]:
+        await notify(message, f"📦 Binar fayl ({human_size(data['size'])}). "
+                              f"Olish uchun: <code>/get {core.escape_html(path)}</code>")
+        return
+    footer = (f"\n\n⏭ Davomi: <code>/cat {core.escape_html(path)} {data['next']}</code>"
+              if data["truncated"] else "")
+    body = data["text"] or "(bo'sh fayl)"
+    await notify(
+        message,
+        f"📄 <code>{core.escape_html(path)}</code> ({human_size(data['size'])}):\n\n"
+        f"<pre>{core.escape_html(body)}</pre>{footer}",
+    )
+
+
+@dp.message(Command("qidir"))
+async def cmd_qidir(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    parts = path_args(command.args or "")
+    if not parts:
+        await notify(message, "Namuna: <code>/qidir *.pdf</code> · <code>/qidir *.log Documents</code>")
+        return
+    pattern = parts[0]
+    data = await device_send(message, "find", pattern=pattern, path=parts[1] if len(parts) > 1 else None,
+                             timeout=devicehub.SLOW_TIMEOUT)
+    if data is None:
+        return
+    if not data["matches"]:
+        await notify(message, f"🔎 <code>{core.escape_html(pattern)}</code> bo'yicha hech narsa topilmadi.")
+        return
+    shown, hidden = fit_lines([f"<code>{core.escape_html(m)}</code>" for m in data["matches"]])
+    header = f"🔎 <b>{data['count']}</b> ta mos fayl" + (" (200 dan ko'plari)" if data["truncated"] else "")
+    tail = f"\n⚠️ Yana {hidden} ta ko'rsatilmadi — katalogni toraytiring." if hidden else ""
+    await notify(message, header + "\n\n" + "\n".join(shown) + tail)
+
+
+@dp.message(Command("tree"))
+async def cmd_tree(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    data = await device_send(message, "tree", path=(command.args or "").strip() or None,
+                             timeout=devicehub.SLOW_TIMEOUT)
+    if data is None:
+        return
+    plain, hidden = fit_lines(data["lines"], limit=3000)
+    body = "\n".join(plain)
+    tail = f"\n⚠️ Yana {hidden} qator sig'madi." if hidden else (
+        "\n⚠️ 200 qatorda to'xtadi, chuqurlik 3." if data["truncated"] else "")
+    await notify(message, f"🌳\n<pre>{core.escape_html(body)}</pre>{tail}")
+
+
+@dp.message(Command("disk"))
+async def cmd_disk(message: types.Message):
+    if not await device_gate(message):
+        return
+    data = await device_send(message, "disk")
+    if data is None:
+        return
+    lines = []
+    for volume in data["volumes"]:
+        used = round(100 * volume["used"] / volume["total"]) if volume["total"] else 0
+        lines.append(f"<code>{core.escape_html(volume['root'])}</code> — {human_size(volume['free'])} bo'sh"
+                     f" / {human_size(volume['total'])} ({used}% band)")
+    await notify(message, "💾 <b>Disk holati</b>\n\n" + "\n".join(lines))
+
+
+@dp.message(Command("stat"))
+async def cmd_stat(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    path = (command.args or "").strip()
+    if not path:
+        await notify(message, "Namuna: <code>/stat hisobot.xlsx</code>")
+        return
+    data = await device_send(message, "stat", path=path)
+    if data is None:
+        return
+    when = datetime.fromtimestamp(data["mtime"]).strftime("%Y-%m-%d %H:%M")
+    await notify(
+        message,
+        f"ℹ️ <code>{core.escape_html(data['path'])}</code>\n"
+        f"• Tur: {'katalog' if data['dir'] else 'fayl'}\n"
+        f"• Hajm: {human_size(data['size'])}\n"
+        f"• O'zgarish: {when}\n"
+        f"• Rejim: {data['mode']}",
+    )
+
+
+@dp.message(Command("mk"))
+async def cmd_mk(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    path = (command.args or "").strip()
+    if not path:
+        await notify(message, "Namuna: <code>/mk Hisobot/2026-11</code>")
+        return
+    data = await device_send(message, "mkdir", path=path)
+    if data is None:
+        return
+    await notify(message, f"📁 Yaratildi: <code>{core.escape_html(data['path'])}</code>")
+
+
+@dp.message(Command("write"))
+async def cmd_write(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    path, newline, body = (command.args or "").partition("\n")
+    path = path.strip()
+    if not path or not newline:
+        await notify(message, "Namuna:\n<code>/write eslatmalar.txt</code>\n"
+                              "Ikkinchi qatordan boshlab fayl matnini yozing.")
+        return
+    data = await device_send(message, "write", path=path, text=body, timeout=devicehub.SLOW_TIMEOUT)
+    if data is None:
+        return
+    await notify(message, f"✅ Yozildi: <code>{core.escape_html(data['path'])}</code> "
+                          f"({human_size(data['bytes'])})")
+
+
+async def move_like(message, command, kind):
+    parts = path_args(command.args or "")
+    if len(parts) < 2:
+        await notify(message, f"Namuna: <code>/{kind} eski.txt Arxiv/eski.txt</code>")
+        return
+    data = await device_send(message, kind, source=parts[0], destination=parts[1],
+                             timeout=devicehub.SLOW_TIMEOUT)
+    if data is None:
+        return
+    icon = "🔀 Ko'chirildi" if kind == "mv" else "📋 Nusxa olindi"
+    await notify(message, f"{icon}: <code>{core.escape_html(data['src'])}</code> → "
+                          f"<code>{core.escape_html(data['dst'])}</code>"
+                          + (f" ({human_size(data['bytes'])})" if "bytes" in data else ""))
+
+
+@dp.message(Command("mv"))
+async def cmd_mv(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    await move_like(message, command, "mv")
+
+
+@dp.message(Command("cp"))
+async def cmd_cp(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    await move_like(message, command, "cp")
+
+
+@dp.message(Command("rm"))
+async def cmd_rm(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    path = (command.args or "").strip()
+    if not path:
+        await notify(message, "Namuna: <code>/rm vaqtinchalik.txt</code>\n"
+                              "⚠️ Faqat bitta FAYL o'chadi — katalog va * belgisi rad etiladi.")
+        return
+    data = await device_send(message, "rm", path=path)
+    if data is None:
+        return
+    await notify(message, f"🗑 O'chirildi: <code>{core.escape_html(data['removed'])}</code> "
+                          f"({human_size(data['size'])})")
+
+
+@dp.message(Command("get"))
+async def cmd_get(message: types.Message, command: CommandObject):
+    if not await device_gate(message):
+        return
+    path = (command.args or "").strip()
+    if not path:
+        await notify(message, f"Namuna: <code>/get Hisobot.xlsx</code> "
+                              f"(maksimal {human_size(devicehub.MAX_UPLOAD_BYTES)})")
+        return
+    data = await device_send(message, "get", path=path, timeout=devicehub.SLOW_TIMEOUT)
+    if data is None:
+        return
+    try:
+        sent = await message.answer_document(
+            BufferedInputFile(base64.b64decode(data["b64"]), filename=base_name(data["path"])),
+            caption=f"📥 {core.escape_html(data['path'])} ({human_size(data['size'])})",
+        )
+        core.store.track_msg(message.from_user.id, sent.message_id)
+    except TelegramAPIError as error:
+        await notify(message, f"⚠️ Fayl yuborilmadi: {str(error)[:150]}")
+
+
+@dp.message(F.document, F.caption.regexp(r"(?i)^/put(\s|$)"))
+async def cmd_put(message: types.Message):
+    if not await device_gate(message):
+        return
+    parts = path_args(message.caption or "")
+    if len(parts) < 2:
+        await notify(message, "Faylni caption bilan yuboring: <code>/put Hisobot/aprel.pdf</code>")
+        return
+    if message.document.file_size and message.document.file_size > devicehub.MAX_UPLOAD_BYTES:
+        await notify(message, f"⚠️ Fayl juda katta ({human_size(message.document.file_size)}), "
+                              f"maksimal {human_size(devicehub.MAX_UPLOAD_BYTES)}.")
+        return
+    payload = await download_tg_file(message.document)
+    data = await device_send(message, "put", path=parts[1],
+                             b64=base64.b64encode(payload).decode("ascii"),
+                             timeout=devicehub.SLOW_TIMEOUT)
+    if data is None:
+        return
+    await notify(message, f"💾 Saqlandi: <code>{core.escape_html(data['path'])}</code> "
+                          f"({human_size(data['bytes'])})")
 
 
 # ------------------------------------------------------------------------ hujjatlar
@@ -1830,6 +2251,14 @@ USER_COMMANDS = [
     ("remember", "Botga doimiy ma'lumot eslatish"),
     ("notes", "Eslatmalarimni ko'rish"),
     ("add", "Kontakt yoki ID bilan odam qo'shish"),
+    ("pair", "Qurilmani ulash: /pair 483920"),
+    ("device", "Qurilmalarim va joriy katalog"),
+    ("ls", "Qurilmadagi papkani ko'rish"),
+    ("cd", "Qurilmada katalogni almashtirish"),
+    ("cat", "Fayl matnini o'qish"),
+    ("get", "Faylni Telegramga yuborish"),
+    ("put", "Faylni qurilmaga saqlash (caption: /put yo'l)"),
+    ("rm", "Bitta faylni o'chirish"),
     ("cancel", "Joriy rejimni bekor qilish"),
     ("stop", "Joriy javobni bekor qilish"),
     ("sites", "Dasturchi loyihalari"),
@@ -1869,13 +2298,16 @@ async def handle_health(request):
 
 async def start_web_server():
     app = web.Application()
+    app["hub"] = HUB
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/device/register", devicehub.handle_register)
+    app.router.add_get("/device/ws", devicehub.handle_ws)
     port = int(os.environ.get("PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
-    print(f">> Web server {port} da ishga tushdi (/health mavjud).")
+    print(f">> Web server {port} da ishga tushdi (/health, /device/register, /device/ws mavjud).")
 
 
 async def main():

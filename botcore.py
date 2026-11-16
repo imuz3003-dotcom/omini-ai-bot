@@ -42,6 +42,9 @@ TEMPERATURE = float(os.getenv("TEMPERATURE", "0.8"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
 IMAGE_TIMEOUT = int(os.getenv("IMAGE_TIMEOUT", "120"))
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "150"))
+# Qurilma (companion) imzosi kaliti. Bo'sh qolsa bot tasodifiy kalit yasaydi va
+# har restart'da barcha pairing buziladi — shuning uchun Render env'ida majburiy.
+DEVICE_SECRET = os.getenv("DEVICE_SECRET", "")
 TG_MSG_LIMIT = 4096
 CHUNK_LIMIT = 3600
 
