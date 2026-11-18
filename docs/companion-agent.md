@@ -90,7 +90,29 @@ joylab, caption'iga `/put manzil/fayl.ext` yozing.
 
 Uzun faylning davomi botning o'zi ko'rsatgan buyruqda: `/cat fayl.txt 3798`.
 
-## 4. Xatolar nimani anglatadi
+## 4. Buyruq yozmasdan, oddiy gap bilan
+
+Qurilma ulangan foydalanuvchida bot oddiy suhbatda ham fayllar bilan ishlaydi —
+`/` buyruqlarini yodash shart emas:
+
+```
+menga Desktop'da player papka yaratib ber
+→ Bot: ✅ Desktop/player yaratildi
+```
+
+Bot bu yerda Gemini'ning function calling'idan foydalanadi va `ls cd cat find tree
+stat mkdir write mv cp rm` vositalarining birini (yoki bir necha tasini ketma-ket)
+chaqiradi. Xavfli bo'lmaganlar tasdiq so'ramaydi. Chegaralar:
+
+- `/get` va `/put` faylni Telegram'ga uzatadi — bu alohida ish, shuning uchun AI
+  ularni o'zi chaqirmaydi. Katta fayl kerak bo'lsa bot ` /get` ni maslahat qiladi.
+- `rm` orqali ham **faqat bitta fayl** o'chadi — katalog yoki `*.tmp` kabi pattern
+  AI tomonidan so'ralsa ham agent rad etadi.
+- Guruh chat'ida AI qurilmaga tegmaydi (faqat shaxsiy suhbat).
+- Agent onlayn bo'lmasa bot qisqacha `📴` bilan javob beradi, javobni uydurmaydi.
+- AI 4 qadamdan ortiq amal so'rasa to'xtaydi — cheksiz sikl bo'lmaydi.
+
+## 5. Xatolar nimani anglatadi
 
 | Ko'rinadi | Sabab | Nima qilish |
 |---|---|---|
@@ -102,7 +124,7 @@ Uzun faylning davomi botning o'zi ko'rsatgan buyruqda: `/cat fayl.txt 3798`.
 | `⛔ ruxsat yo'q: … ildizdan tashqarida` | `ROOT` tashqarisiga chiqdingiz | `/cd` bilan ildiz ichida qoling yoki `--root` ni kengaytiring |
 | `Python topilmadi` (`.bat` derazasida) | PATH'da yo'q | Python'ni qayta o'rnatib, "Add python.exe to PATH" belgisini qo'ying |
 
-## 5. Nima ataylab qilinmaydi
+## 6. Nima ataylab qilinmaydi
 
 - Shell yo'q: agent bitta ham tizim buyrug'ini ishga tushirmaydi (`/run`,
   `/kill`, `/shutdown` kabi buyruqlar umuman mavjud emas).
@@ -112,7 +134,7 @@ Uzun faylning davomi botning o'zi ko'rsatgan buyruqda: `/cat fayl.txt 3798`.
   belgi beradi (davomi offset bilan).
 - Guruh chat'ida qurilma buyruqlari ishlamaydi: faqat shaxsiy suhbat.
 
-## 6. Xavfsizlik eslatmasi
+## 7. Xavfsizlik eslatmasi
 
 Telegram akkauntingiz = kompyuteringizning kaliti. Akkaunt o'g'irlansa hujjatlaringiz
 o'qiladi va bitta fayl o'chirilishi mumkin. Shuning uchun: `DEVICE_SECRET`ni

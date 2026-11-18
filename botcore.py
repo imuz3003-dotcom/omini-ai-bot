@@ -721,15 +721,78 @@ def _search_tool():
 _search_broken = set()
 
 
-def build_config(use_search: bool, system_instruction: str = BASE_INSTRUCTION):
+def _object_schema(*fields):
+    """Gemini'ning object sxemasi: (nom, tur, tavsif, majburiy) uchliklaridan."""
+    properties, required = {}, []
+    for name, kind, description, is_required in fields:
+        properties[name] = genai_types.Schema(type=kind, description=description)
+        if is_required:
+            required.append(name)
+    return genai_types.Schema(type=genai_types.Type.OBJECT, properties=properties,
+                              required=required or None)
+
+
+S = genai_types.Type.STRING
+N = genai_types.Type.INTEGER
+
+# Modelga beriladigan qurilma vositalari. Nomlar agentdagi amal nomlari bilan
+# bir xil — shu yerda o'chirib tashlasangiz, model u amalni qila olmaydi.
+# `get`/`put` ataylab yo'q: 8 MB faylni model orqali uzatish xavfsiz emas.
+DEVICE_TOOLS = (
+    ("ls", "Ruxsat etilgan katalogdagi fayl va papkalarni ko'rsatadi (60 tagacha).",
+     (("path", S, "Qaysi papkani ko'rish (bo'sh bo'lsa joriy papka)", False),)),
+    ("cd", "Joriy papkani almashtiradi; yo'l ruxsat etilgan ildiz ichida bo'lishi shart.",
+     (("path", S, "Kirib boriladigan papka", True),)),
+    ("cat", "Matnli faylni o'qiydi. Uzun faylning davomi offset bilan so'raladi.",
+     (("path", S, "Fayl yo'li", True),
+      ("offset", N, "Nechinchi belgidan boshlab o'qish", False))),
+    ("find", "Ildiz ichida fayl nomini qidiradi (glob pattern, masalan *.log).",
+     (("pattern", S, "Qidiruv patterni", True),
+      ("path", S, "Qayerdan qidirish (bo'sh bo'lsa joriy papka)", False))),
+    ("tree", "Papka daraxtini ko'rsatadi (3 chuqurlik, 200 tagacha qator).",
+     (("path", S, "Qaysi papkadan boshlash (bo'sh bo'lsa joriy papka)", False),)),
+    ("stat", "Bitta fayl yoki papka haqida ma'lumot: o'lcham, sana, tur.",
+     (("path", S, "Fayl yoki papka yo'li", True),)),
+    ("mkdir", "Yangi papka yaratadi.",
+     (("path", S, "Yaratiladigan papka yo'li", True),)),
+    ("write", "Faylga matn yozadi (mavjud faylni almashtiradi).",
+     (("path", S, "Yoziladigan fayl yo'li", True),
+      ("text", S, "Faylga tushadigan matn", True))),
+    ("mv", "Faylni ko'chiradi yoki nomini almashtiradi.",
+     (("source", S, "Manzil", True), ("destination", S, "Yangi yo'l", True))),
+    ("cp", "Fayl nusyasini yaratadi.",
+     (("source", S, "Manzil", True), ("destination", S, "Nusxa yo'li", True))),
+    ("rm", "Faqat BITTA faylni o'chiradi. Katalog (papka) va glob pattern rad etiladi.",
+     (("path", S, "O'chiriladigan fayl yo'li", True),)),
+)
+
+
+def device_tool_declarations() -> list:
+    return [genai_types.FunctionDeclaration(name=name, description=description,
+                                            parameters=_object_schema(*fields))
+            for name, description, fields in DEVICE_TOOLS]
+
+
+def device_tool_params() -> dict:
+    """Vosita nomi → ruxsat etilgan parametr nomlari (model ortiqchasini yubora olmasin)."""
+    return {name: tuple(field[0] for field in fields) for name, _, fields in DEVICE_TOOLS}
+
+
+def build_config(use_search: bool, system_instruction: str = BASE_INSTRUCTION,
+                 with_devices: bool = False):
     cfg = {
         "temperature": TEMPERATURE,
         "max_output_tokens": MAX_OUTPUT_TOKENS,
         "system_instruction": system_instruction,
     }
+    tools = []
     tool = _search_tool() if use_search else None
     if tool is not None:
-        cfg["tools"] = [tool]
+        tools.append(tool)
+    if with_devices:
+        tools.append(genai_types.Tool(function_declarations=device_tool_declarations()))
+    if tools:
+        cfg["tools"] = tools
     return cfg
 
 
@@ -747,16 +810,27 @@ def to_history(records: list) -> list:
     return history
 
 
-def create_chat(user_id: int, system_instruction: str, model: str, use_search: bool, replay: bool = True):
-    """Yangi Gemini sessiyasi; bazadagi oxirgi suhbatni xotiraga qayta yuklaydi."""
+def create_chat(user_id: int, system_instruction: str, model: str, use_search: bool,
+                replay: bool = True, with_devices: bool = False):
+    """Yangi Gemini sessiyasi; bazadagi oxirgi suhbatni xotiraga qayta yuklaydi.
+
+    Ketma-ket sinanadi: qidiruv bilan/hemasiz va qurilma vositalari bilan/yo'q —
+    model vosita deklaratsiyasini ko'tara olmasa ham suhbat islayveradi.
+    """
     history = to_history(store.history(user_id, HISTORY_REPLAY)) if replay else []
-    attempts = [use_search, False] if use_search and model not in _search_broken else [False]
+    search_options = ([use_search, False]
+                      if use_search and model not in _search_broken else [False])
+    attempts = []
+    for want_search in search_options:
+        attempts.append((want_search, with_devices))
+        if with_devices:
+            attempts.append((want_search, False))
     last_error = None
-    for want_search in attempts:
+    for want_search, want_devices in attempts:
         try:
             chat = client.chats.create(
                 model=model,
-                config=build_config(want_search, system_instruction),
+                config=build_config(want_search, system_instruction, want_devices),
                 history=history,
             )
             return chat, want_search
@@ -765,6 +839,8 @@ def create_chat(user_id: int, system_instruction: str, model: str, use_search: b
             if want_search:
                 _search_broken.add(model)
                 logging.warning("Web-search modeli qo'llab-quvvatlamadi (%s): %s", model, error)
+            elif want_devices:
+                logging.warning("Vosita deklaratsiyasi yiqildi (%s): %s", model, error)
     raise last_error
 
 
@@ -821,24 +897,64 @@ def ask_once(model: str, contents, use_search: bool, system_instruction: str = B
     raise last_error
 
 
-async def stream_text(chat, prompt: str):
+MAX_TOOL_ROUNDS = 4
+# Bitta vosita javobi uchun chegara: agentdagi sekin amallar 60 s, ustiga tarmoq.
+TOOL_ANSWER_TIMEOUT = 75.0
+
+
+class ToolLoopLimit(Exception):
+    """Model qadam-qadam javob yuborishda davom etdi — suhbatni to'xtatamiz."""
+
+
+def _answer_call(call, dispatch, loop) -> dict:
+    """Vosita chaqiruvini event loop'ga tashlab, natijasini thread'ga qaytaradi.
+
+    Xato hech qayoqqa uchib ketmasligi kerak: javoblanmagan function_call
+    Gemini tarixini buzadi va keyingi xabarlar sinadi.
+    """
+    future = asyncio.run_coroutine_threadsafe(
+        dispatch(call.name, dict(call.args or {})), loop)
+    try:
+        result = future.result(TOOL_ANSWER_TIMEOUT)
+    except BaseException as error:
+        future.cancel()
+        return {"error": str(error) or type(error).__name__}
+    return result if isinstance(result, dict) else {"result": result}
+
+
+async def stream_text(chat, prompt, dispatch=None):
     """Gemini oqimidan matn bo'laklarini bema'ni kutishsiz beradi.
 
     SDK oqimi sync generator, shuning uchun u thread'da ishlaydi va bo'laklar
-    queue orqali event loop'ga uzatiladi.
+    queue orqali event loop'ga uzatiladi. `dispatch` berilsa, model so'ragan
+    qurilma amallari shu yerda bajarilib, javobi modelga qaytariladi.
     """
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
 
+    def emit(item):
+        loop.call_soon_threadsafe(queue.put_nowait, item)
+
     def worker():
         try:
-            for chunk in chat.send_message_stream(prompt):
-                piece = getattr(chunk, "text", None)
-                if piece:
-                    loop.call_soon_threadsafe(queue.put_nowait, piece)
+            message = prompt
+            for turn in range(MAX_TOOL_ROUNDS + 1):
+                calls = []
+                for chunk in chat.send_message_stream(message):
+                    piece = getattr(chunk, "text", None)
+                    if piece:
+                        emit(piece)
+                    calls.extend(getattr(chunk, "function_calls", None) or [])
+                if not calls:
+                    break
+                if dispatch is None or turn == MAX_TOOL_ROUNDS:
+                    raise ToolLoopLimit(
+                        f"{MAX_TOOL_ROUNDS} qadamdan ortiqcha amal so'raldi")
+                message = [_response_part(call, _answer_call(call, dispatch, loop))
+                           for call in calls]
         except BaseException as error:
-            loop.call_soon_threadsafe(queue.put_nowait, error)
-        loop.call_soon_threadsafe(queue.put_nowait, None)
+            emit(error)
+        emit(None)
 
     loop.run_in_executor(None, worker)
     while True:
@@ -848,6 +964,38 @@ async def stream_text(chat, prompt: str):
         if isinstance(item, BaseException):
             raise item
         yield item
+
+
+def _response_part(call, result) -> "genai_types.Part":
+    payload = result if isinstance(result, dict) else {"result": result}
+    return genai_types.Part(function_response=genai_types.FunctionResponse(
+        id=call.id, name=call.name, response=payload))
+
+
+async def send_text(chat, prompt, dispatch=None) -> tuple:
+    """Oqimsiz javob + vosita qadamlari: SDK chaqiruvi thread'da, amal loop'da.
+
+    Chaqiruvni javobsiz qoldirish Gemini tarixini buzadi, shuning uchun oqimdagi
+    (stream_text) bilan bir xil qadamlar chegarasi qo'llanadi. (matn, oxirgi
+    javob) qaytariladi — javobdan manbalar (search) olinishi kerak.
+    """
+    message = prompt
+    text = ""
+    for turn in range(MAX_TOOL_ROUNDS + 1):
+        response = await asyncio.to_thread(chat.send_message, message)
+        text += (getattr(response, "text", None) or "")
+        calls = getattr(response, "function_calls", None) or []
+        if not calls:
+            return text, response
+        if dispatch is None or turn == MAX_TOOL_ROUNDS:
+            raise ToolLoopLimit(f"{MAX_TOOL_ROUNDS} qadamdan ortiqcha amal so'raldi")
+        answers = []
+        for call in calls:
+            try:
+                answers.append(_response_part(call, await dispatch(call.name, dict(call.args or {}))))
+            except BaseException as error:
+                answers.append(_response_part(call, {"error": str(error) or type(error).__name__}))
+        message = answers
 
 
 def translate_prompt_to_english(prompt_text: str, model: str) -> str:

@@ -1,7 +1,8 @@
 # omini AI — Qurilma boshqaruv agenti (companion) dizayni
 
-Sana: 2026-11-13 · Holat: 1-2-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
-`agent.py`), 3-4-bosqichlar navbatda
+Sana: 2026-11-13 · Holat: 1-5-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
+`agent.py`, `devicehub.py` + handlerlar, ishga tushirish hujjati, AI qurilma
+vositalari)
 
 ## 1. Maqsad
 
@@ -183,6 +184,34 @@ shuning uchun `protocol.MAX_FRAME_BYTES = 16 MiB` ikkala tomonda ham aiohttpga
 beriladi: agentda `ws_connect(max_msg_size=…)`, botda `WebSocketResponse(max_msg_size=…)`.
 Standart 4 MB qiymat qolganda katta fayl sessiyani jimgina yo'q qilardi.
 
+### Tabiiy til: AI o'zi qurilmada ishlaydi (5-bosqich)
+
+Odamlar buyruq yodlamaydi — "menga player papka yaratib ber" deganda bot avval
+"huquqim yo'q" deb javob qilardi. Endi suhbat sessiyasiga Gemini function-calling
+deklaratsiyalari qo'shiladi (`botcore.DEVICE_TOOLS`) va ular **faqat qurilmasi
+bo'lgan foydalanuvchi uchun** (`ensure_session` → `HUB.devices_of`). Oqim:
+
+1. Model `mkdir {path: "Desktop/player"}` chaqiradi (matn chiqmaydi, shuning uchun
+   foydalanuvchi kutish holatini ko'rmaydi).
+2. `bot.dispatch_tool` parametr nomlarini filtrlaydi (deklaratsiyada yo'q kalitlar
+   agentgacha bormaydi) va `HUB.run`/`HUB.change_dir` orqali bajaradi.
+3. Natija (yoki `{"error": …}`) `function_response` bo'lib modelga qaytadi, model
+   oxirgi matnni yozadi.
+
+Qoidalar:
+- Vosita nomlari agentdagi op nomlari bilan bir xil; `get`/`put` deklaratsiyalarda
+  **yo'q** — 8 MB fayl uzatish odam buyrug'i bo'lib qoladi.
+- `rm` berilgan (foydalanuvchi tanlovi), lekin agentdagi chegaralar o'zgarmaydi:
+  bitta fayl, ildiz ichida, deny ro'yxati.
+- Javoblanmagan `function_call` Gemini tarixini buzadi, shuning uchun har bir
+  chaqiruv javoblanadi: xato bo'lsa `{"error": …}`. Qadamlar chegarasi
+  `MAX_TOOL_ROUNDS = 4`; undan oshsa `ToolLoopLimit` ko'tariladi (sessiya keyingi
+  xabarda qayta yaratiladi).
+- Guruh chatida `tool_dispatch` chaqiruvni bajarmaydi, rad javobini qaytaradi —
+  xabar shaxsiy chatda yozilsin.
+- Model vosita deklaratsiyasini ko'tara olmasa, `create_chat` deklaratsiyasiz
+  qayta urinadi: suhbat baribir ishlaydi.
+
 ## 7. Xatolar
 
 Agent har bir amalni `except Exception` bilan tutadi va `{"ok": false, "error":
@@ -242,7 +271,18 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
 - `companion/test_agent.py` → `ServeRetry` — qayta-ulinish oraliqlari (1,2,4,8,16)
   va uzun sessiyadan keyin hisobning nolga qaytishi; `BindingRevoked` — `4401`/`4403`
   kodli yopilish `bind`ni o'chiradi, oddiy uzilish uni saqlaydi.
-- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 209 test, hammasi
+- `test_device_ai.py` (33 test) — 5-bosqich: `DEVICE_TOOLS` deklaratsiyalari
+  (`rm` bor, `get`/`put` yo'q), `build_config(with_devices=True)` tool'ni qo'shadi,
+  `ensure_session` qurilma bor/yo'q holatini suhbatga oladi, `dispatch_tool` ruxsat
+  etilmagan nomni rad etadi va `DeviceError`ni `{"error": …}` qiladi, `stream_text`
+  tool-loop davomida ham matnni uzluksiz chiqaradi, javobsiz qoldirilgan
+  `function_call` bo'lsa xato ko'tariladi, `MAX_TOOL_ROUNDS`dan oshsa `ToolLoopLimit`,
+  `tool_dispatch(user_id, private=False)` guruh chat'ida qurilmaga umuman tegmaydi
+  (mutatsiyada `if not private` o'chirilib testning qulagani ko'rildi). Dublikatlar
+  haqiqiy `genai.types`
+  obyektlari bilan yozilgan (`FakeChat` `send_message_stream`ni chunk ro'yxati bilan
+  taqlid qiladi).
+- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 242 test, hammasi
   tarmoqsiz va soatsiz (`skipped=1` — symlink testi Windows'da admin so'raydi).
 - Bir martalik e2e tekshiruv (kommit qilinmaydi): haqiqiy `aiohttp` server + haqiqiy
   `agent.serve()` — pairing, `agent.json`ga `bind` yozilishi, `ls/cat/get/mkdir/cd`,
@@ -262,9 +302,18 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
 4. ✅ Ishga tushirish hujjati: `docs/companion-agent.md` (Windows + Termux + xato
    jadvali), `start_agent.bat`, `render.yaml`ga `DEVICE_SECRET` (`sync: false`) —
    qiymatni dashboard'da yaratish foydalanuvchining ishi.
+5. ✅ Tabiiy til: AI o'zi qurilmada ishlaydi — `botcore.py`da `DEVICE_TOOLS`
+   deklaratsiyalari, `build_config(with_devices=…)`, `stream_text`/`send_text`dagi
+   tool-loop va `ToolLoopLimit`; `bot.py`da `dispatch_tool`/`tool_dispatch`,
+   `DEVICE_BLOCK` va `ensure_session`ning qurilma belgisi. Agent tomonida hech
+   narsa o'zgarmadi: chegara, deny-ro'yxat va ildiz qorovuli avvalgi-dayin.
 
 ## 11. Qabul qilingan zaifliklar
 
+- **Tabiiy til'da yo'lni model tanlaydi.** "eski fayllarni tozala" degan gapdan
+  keyin `rm` chaqirig'ini Gemini yozadi va u xato faylni o'chirishi mumkin.
+  Tasdiq so'rofi qasddan qilinmagan (foydalanuvchi shuni tanladi); chegara —
+  agentdagi qorovullar: bitta fayl, ildiz ichida, deny-ro'yxat, faqat shaxsiy chat.
 - **Telegram akkaunti = kompyuter kaliti.** Akkaunt o'g'irlansa hujjatlar o'qiladi va
   bitta fayl o'chiriladi; shell bo'lgani uchun emas, zarar cheklangan.
 - **Haqiqiy bekor qilish (revocation) yo'q.** `/unpair` faqat bog'lanishni uzadi;

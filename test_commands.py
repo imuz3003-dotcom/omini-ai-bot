@@ -546,7 +546,7 @@ class FakeChat:
 def chunks_stream(pieces=None, error=None, fail_after=None):
     """core.stream_text o'rniga: berilgan bo'laklarni oqim qilib qaytaradi."""
 
-    async def gen(chat, prompt):
+    async def gen(chat, prompt, dispatch=None):
         for index, piece in enumerate(pieces or []):
             if error is not None and index == fail_after:
                 raise error
@@ -611,13 +611,18 @@ class StreamingReply(unittest.IsolatedAsyncioTestCase):
     async def test_stop_cancels_stream_and_deletes_half_answer(self):
         hold = asyncio.Event()
 
-        async def stalled(chat, prompt):
+        async def stalled(chat, prompt, dispatch=None):
             yield "yarim javob " + "g" * 200
             await hold.wait()
 
         self.enterContext(patch.object(app.core, "stream_text", stalled))
         task = asyncio.create_task(self.feed())
-        await asyncio.sleep(0.05)
+        for _ in range(300):
+            # Yarim xabar ko'ringan paytni kuzatib olamiz: qattiq 50 ms kutish
+            # mashina band bo'lganda sinadi (birinchi xabar ulgurmay qoladi).
+            if "SendMessage" in self.session.names():
+                break
+            await asyncio.sleep(0.01)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         self.assertIn("DeleteMessage", self.session.names(), "to'xtatilganda yarim xabar qoldi")

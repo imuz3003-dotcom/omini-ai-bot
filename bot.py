@@ -144,11 +144,26 @@ def model_of(user: dict) -> str:
     return user.get("model") or core.MODEL_NAME
 
 
-def instruction_for(user: dict) -> str:
+DEVICE_BLOCK = (
+    "\n\nQURILMA VOSITALARI: foydalanuvchining kompyuteri yoki telefoni ulangan "
+    "bo'lishi mumkin va sizda shu qurilmada ishlaydigan vositalar bor: ls, cd, cat, "
+    "find, tree, stat, mkdir, write, mv, cp, rm. Foydalanuvchi fayl yoki papka bilan "
+    "bog'liq narsa so'rasa, avval shu vositalardan birini chaqiring — 'huquqim yo'q' "
+    "deb javob qaytarmang. Vosita xato qaytarsa (masalan «📴 onlayn emas» yoki "
+    "«ruxsat yo'q»), sababini foydalanuvchiga o'zbek tilida tushuntiring va agentni "
+    "ishga tushirish yoki /pair buyrug'ini maslahat bering. Guruh chatida vositalar "
+    "ishlamaydi — xabar shaxsiy chatda yozilsin. Har bir javobni faqat bitta amaldan "
+    "keyin tekshiring va ortiqcha qadamni taklif qilmang."
+)
+
+
+def instruction_for(user: dict, with_devices: bool = False) -> str:
     notes = core.store.notes(user["id"]) if user.get("id") else []
     text = core.persona_instruction(user.get("persona") or "general")
     if notes:
         text += "\n\nFoydalanuvchi haqidagi doimiy eslatmalar (ularni hisobga oling):\n- " + "\n- ".join(notes)
+    if with_devices:
+        text += DEVICE_BLOCK
     return text
 
 
@@ -156,15 +171,18 @@ def ensure_session(user_id: int, fresh: bool = False) -> dict:
     """Foydalanuvchi Gemini sessiyasi; sozlamalar o'zgarsa yoki yo'q bo'lsa qayta yaratadi."""
     user = core.store.user(user_id)
     session = core.current_session(user_id)
+    has_devices = bool(HUB.devices_of(user_id))
     wanted = {
         "model": model_of(user),
         "persona": user.get("persona") or "general",
         "search": bool(user.get("search")),
+        "devices": has_devices,
     }
     if not fresh and session.get("chat") and all(session.get(k) == v for k, v in wanted.items()):
         return session
     chat, search_on = core.create_chat(
-        user_id, instruction_for(user), wanted["model"], wanted["search"], replay=not fresh
+        user_id, instruction_for(user, has_devices), wanted["model"], wanted["search"],
+        replay=not fresh, with_devices=has_devices
     )
     session = core.remember_session(user_id, chat, search_on)
     session.update(wanted)
@@ -174,13 +192,15 @@ def ensure_session(user_id: int, fresh: bool = False) -> dict:
 def drop_search(user_id: int) -> dict:
     """Model web-search'ni ko'tara olmasa, qidiruvni o'chirib sessiyani qayta ochadi."""
     user = core.store.user(user_id)
-    chat, _ = core.create_chat(user_id, instruction_for(user), model_of(user), False, replay=True)
+    has_devices = bool(HUB.devices_of(user_id))
+    chat, _ = core.create_chat(user_id, instruction_for(user, has_devices), model_of(user),
+                               False, replay=True, with_devices=has_devices)
     session = core.remember_session(user_id, chat, False)
     session.update({"model": model_of(user), "persona": user.get("persona") or "general", "search": False})
     return session
 
 
-async def stream_reply(message, session, prompt: str, user_id: int, markup=None):
+async def stream_reply(message, session, prompt: str, user_id: int, markup=None, dispatch=None):
     """Javobni qism-qism ko'rsatadi: kelgan matn bitta xabarda edit qilinib boradi."""
     send = message.reply if message.chat.type != "private" else message.answer
     msg = None
@@ -188,7 +208,7 @@ async def stream_reply(message, session, prompt: str, user_id: int, markup=None)
     full = ""
     last_edit = 0.0
     try:
-        async for piece in core.stream_text(session["chat"], prompt):
+        async for piece in core.stream_text(session["chat"], prompt, dispatch):
             full += piece
             grown = len(full) - len(shown)
             if msg is None:
@@ -235,23 +255,25 @@ async def ask_ai(message, prompt: str, user_id: int, markup=None):
     async with keep_typing(message.chat.id):
         session = ensure_session(user_id)
         core.store.add_message(user_id, "user", prompt)
+        dispatch = tool_dispatch(user_id, message.chat.type == "private")
         answer = None
         sent = None
         if not session.get("search"):
             try:
-                answer, sent = await stream_reply(message, session, prompt, user_id, markup)
+                answer, sent = await stream_reply(message, session, prompt, user_id, markup,
+                                                  dispatch)
             except Exception as error:
                 logging.warning("Oqimli javob yutildi, bitta xabarga qaytamiz: %s", error)
         if answer is None:
             try:
-                response = await asyncio.to_thread(session["chat"].send_message, prompt)
+                text, response = await core.send_text(session["chat"], prompt, dispatch)
             except Exception as error:
                 if not session.get("search"):
                     raise
                 logging.warning("Sessiyada web-search xatosi, o'chirilib qayta uriladi: %s", error)
                 session = drop_search(user_id)
-                response = await asyncio.to_thread(session["chat"].send_message, prompt)
-            answer = core.extract_text(response) or "Kechirasiz, javob shakllanmadi."
+                text, response = await core.send_text(session["chat"], prompt, dispatch)
+            answer = (text or "").strip() or core.extract_text(response) or "Kechirasiz, javob shakllanmadi."
             sources = core.extract_sources(response) if session.get("search") else []
             sent = await send_long(message, answer, user_id, markup=markup, sources=sources)
         core.store.add_message(user_id, "model", answer)
@@ -1220,6 +1242,46 @@ async def device_send(message, op, timeout=None, **args):
 
 async def show_device_error(message, error) -> None:
     await notify(message, f"<code>{core.escape_html(str(error))}</code>")
+
+
+DEVICE_TOOL_NAMES = frozenset(name for name, _, _ in core.DEVICE_TOOLS)
+
+
+async def dispatch_tool(user_id, name, args) -> dict:
+    """Model so'ragan amalni foydalanuvchining qurilmasida bajaradi.
+
+    Xato hech qachon o'sib chiqmaydi: javob doim dict bo'ladi, chunka
+    javoblanmagan function_call Gemini tarixini buzadi.
+    """
+    if name not in DEVICE_TOOL_NAMES:
+        return {"error": f"Bunday amal ruxsat etilmagan: {name}"}
+    params = core.device_tool_params()[name]
+    clean = {key: value for key, value in (args or {}).items()
+             if key in params and value not in (None, "")}
+    if name == "cd":
+        target = clean.get("path")
+        if not target:
+            return {"error": "cd uchun papka yo'li kerak"}
+        try:
+            return {"cwd": await HUB.change_dir(user_id, target)}
+        except devicehub.DeviceError as error:
+            return {"error": str(error)}
+    try:
+        return await HUB.run(user_id, name, **clean)
+    except devicehub.DeviceError as error:
+        return {"error": str(error)}
+
+
+def tool_dispatch(user_id, private: bool):
+    """stream_text uchun vosita bajaruvchisi; guruh chatida faqat rad javobi."""
+    if not private:
+        async def refuse(name, args):
+            return {"error": "Guruh chatida qurilma amallari bajarilmaydi."}
+        return refuse
+
+    async def run(name, args):
+        return await dispatch_tool(user_id, name, args)
+    return run
 
 
 def human_size(num) -> str:
