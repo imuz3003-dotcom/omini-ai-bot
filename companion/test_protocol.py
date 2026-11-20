@@ -46,8 +46,15 @@ class Builders(unittest.TestCase):
         self.assertEqual(
             protocol.hello("a1b2", "desk-pc", bind="beef", owner_user_id=42),
             {"v": 1, "type": "hello", "agent_id": "a1b2", "name": "desk-pc",
-             "bind": "beef", "owner_user_id": 42},
+             "bind": "beef", "owner_user_id": 42, "root": None},
         )
+
+    def test_hello_carries_the_root_for_readmission(self):
+        """Bot ro'yxati restart'da o'chadi — qayta qabulda papka nomini hello
+        o'zi olib keladi, aks holda `/device` bo'sh root ko'rsatardi."""
+        frame = protocol.hello("a1b2", "desk-pc", bind="beef", owner_user_id=42,
+                               root="C:/Users/me")
+        self.assertEqual(frame["root"], "C:/Users/me")
 
     def test_bound_frame_shape(self):
         self.assertEqual(

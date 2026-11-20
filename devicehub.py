@@ -48,6 +48,12 @@ def bind_token(secret, agent_id, owner_user_id) -> str:
     return hmac.new(str(secret).encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
+def binds_match(candidate, expected) -> bool:
+    """`hmac.compare_digest` ASCII bo'lmagan satr bilan `TypeError` beradi;
+    `bind` esa tashqi kadrdan keladi — shuning uchun baytlarni solishtiramiz."""
+    return hmac.compare_digest(str(candidate).encode("utf-8"), str(expected).encode("utf-8"))
+
+
 class Device:
     """Bitta qurilma: kimga tegishli, qaysi kanaldan eshitiladi, joriy katalogi."""
 
@@ -86,6 +92,7 @@ class DeviceHub:
         self._pending = {}        # agent_id -> (socket, pump task) — pairing kutilmoqda
         self._wrong = {}          # user_id -> (count, since)
         self._active = {}         # user_id -> agent_id
+        self._revoked = set()     # /unpair qilingan — imzosi to'g'ri bo'lsa ham qaytarmaymiz
 
     # ------------------------------------------------------------------ pairing
 
@@ -167,7 +174,7 @@ class DeviceHub:
 
     # ------------------------------------------------------------------ kanallar
 
-    async def attach(self, agent_id, socket, bind=None, owner_user_id=None):
+    async def attach(self, agent_id, socket, bind=None, owner_user_id=None, name=None, root=None):
         """Kanalni ro'yxatga olish. `bind` yo'q bo'lsa — pairing kutilayotgan kanal."""
         agent_id = str(agent_id)
         if not AGENT_ID_RE.match(agent_id):
@@ -177,10 +184,13 @@ class DeviceHub:
             return await self._watch_for_pairing(agent_id, socket)
 
         device = self._devices.get(agent_id)
-        if device is None:
-            await socket.close(code=4401)
-            raise DeviceError("Bu qurilma ro'yxatda yo'q — Telegramda /pair kodini kiriting.")
-        if not hmac.compare_digest(str(bind), device.bind):
+        fresh = device is None
+        if fresh:
+            device = self._rebuild_from_bind(agent_id, str(bind), owner_user_id, name, root)
+            if device is None:
+                await socket.close(code=4401)
+                raise DeviceError("Bu qurilma ro'yxatda yo'q — Telegramda /pair kodini kiriting.")
+        if not binds_match(bind, device.bind):
             log.warning("Soxta imzo: agent=%s da'vo qilingan user=%s", agent_id[:8], owner_user_id)
             await socket.close(code=4401)
             raise DeviceError("⛔ Imzo tekshiruvidan o'tmadi.")
@@ -188,8 +198,29 @@ class DeviceHub:
         waiting = self._pending.pop(agent_id, None)
         if waiting is not None and waiting[0] is not socket:
             await self._close(waiting[0], code=4409)
-        await self._go_online(device, socket)
+        try:
+            await self._go_online(device, socket)
+        except DeviceError:
+            if fresh:
+                self._devices.pop(agent_id, None)
+            raise
         return device.pump
+
+    def _rebuild_from_bind(self, agent_id, bind, owner_user_id, name, root):
+        """Ro'yxat restart'da o'chadi, `bind` esa HMAC — imzoni qayta hisoblab
+        tekshiramiz, shunda qurilma qayta `/pair` yozmasdan qayta keladi."""
+        if agent_id in self._revoked:
+            return None
+        try:
+            owner = int(owner_user_id)
+        except (TypeError, ValueError):
+            return None
+        if not binds_match(bind, bind_token(self.secret, agent_id, owner)):
+            return None
+        device = Device(agent_id, str(name or "qurilma"), str(root or ""), owner, bind)
+        self._devices[agent_id] = device
+        log.info("Imzo bo'yicha qayta qabul: %s (user %s)", device.name, owner)
+        return device
 
     async def _watch_for_pairing(self, agent_id, socket):
         stale = self._pending.pop(agent_id, None)
@@ -354,6 +385,7 @@ class DeviceHub:
         device = self._match(user_id, ref)
         owner = device.owner_user_id
         self._devices.pop(device.agent_id, None)
+        self._revoked.add(device.agent_id)
         if self._active.get(owner) == device.agent_id:
             self._active.pop(owner, None)
         self._fail_pending(device, f"\"{device.name}\" ro'yxatdan olib tashlandi.")
@@ -396,7 +428,8 @@ async def handle_ws(request):
             raise DeviceError("Birinchi kadr `hello` bo'lishi kerak.")
         agent_id = frame["agent_id"]
         task = await device_hub.attach(agent_id, socket, bind=frame.get("bind"),
-                                       owner_user_id=frame.get("owner_user_id"))
+                                       owner_user_id=frame.get("owner_user_id"),
+                                       name=frame.get("name"), root=frame.get("root"))
     except (protocol.ProtocolError, DeviceError) as error:
         log.warning("Qurilma ulanishi rad etildi (%s): %s", agent_id, error)
         with contextlib.suppress(Exception):

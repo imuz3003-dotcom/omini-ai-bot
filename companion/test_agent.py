@@ -336,7 +336,7 @@ class ServeRetry(unittest.IsolatedAsyncioTestCase):
     qiladi (e2e tekshiruvda 4 sekundda 83 ulanish).
     """
 
-    async def drive(self, durations):
+    async def drive(self, durations, state=None):
         clock = {"t": 0.0}
         delays = []
         enough = asyncio.Event()
@@ -353,7 +353,7 @@ class ServeRetry(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
         task = asyncio.create_task(agent.serve(
-            None, connect=connect, sleep=sleep, now=lambda: clock["t"]))
+            state, connect=connect, sleep=sleep, now=lambda: clock["t"]))
         try:
             await asyncio.wait_for(enough.wait(), timeout=2.0)
         finally:
@@ -371,6 +371,95 @@ class ServeRetry(unittest.IsolatedAsyncioTestCase):
         stable = agent.STABLE_SESSION_SECONDS + 5
         delays = await self.drive([0.0, 0.0, stable, 0.0])
         self.assertEqual(delays, [1.0, 2.0, 1.0, 1.0])
+
+
+class FlappingHealsItself(unittest.IsolatedAsyncioTestCase):
+    """Ketma-ket qisqa sessiyalar = binding o'lgan, lekin sabab ko'rinmayapti.
+
+    Nima uchun kerak: Render Free proksi bizning 4401 yopilish kodini mijozga
+    ~21 sekundda yetkazadi (vosita `1006` ko'rsatadi). Shuning uchun
+    `on_closed` bindingni hech qachon tozalamaydi va agent abadiy jimgina
+    aylanadi. Agar DEVICE_SECRET almashtirilsa yoki `/unpair` qilingan bo'lsa,
+    yagona signal — shu qisqa ulanishlar.
+    """
+
+    def bound_state(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "agent.json"
+        config = {
+            "bot_url": "https://bot.example",
+            "agent_id": "a1b2" * 8,
+            "name": "desk-pc",
+            "owner_user_id": 42,
+            "bind": "beefcafe",
+            "roots": [directory.name],
+            "deny": [],
+        }
+        agent.save_config(path, config)
+        return agent.AgentState(config, path), path
+
+    async def drive(self, durations, state):
+        clock = {"t": 0.0}
+        enough = asyncio.Event()
+        counted = 0
+        lengths = list(durations)
+
+        async def connect(_state):
+            nonlocal counted
+            clock["t"] += lengths[counted]
+            counted += 1
+
+        async def sleep(delay):
+            clock["t"] += delay
+            if counted >= len(lengths):
+                enough.set()
+                # Sessiyalar tugadi: `serve` keyingi aylanishida buzilmasin.
+                await asyncio.sleep(3600)
+                return
+            await asyncio.sleep(0)
+
+        task = asyncio.create_task(agent.serve(
+            state, connect=connect, sleep=sleep, now=lambda: clock["t"]))
+        try:
+            await asyncio.wait_for(enough.wait(), timeout=2.0)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def test_three_short_sessions_drop_the_stale_binding(self):
+        state, path = self.bound_state()
+        await self.drive([1.0, 1.0, 1.0], state)
+        self.assertIsNone(state.config["bind"])
+        self.assertIsNone(state.config["owner_user_id"])
+        # Reset disk'ga ham yozilgan bo'lishi kerak: agent qayta boshlansa,
+        # o'lgan imzo bilan yana aylanib qolmasin.
+        self.assertIsNone(agent.load_config(path)["bind"])
+
+    async def test_a_stable_session_clears_the_flap_count(self):
+        state, _path = self.bound_state()
+        short = agent.FLAP_SESSION_SECONDS - 1
+        long = agent.FLAP_SESSION_SECONDS + 30
+        await self.drive([short, short, long, short, short], state)
+        self.assertEqual(state.config["bind"], "beefcafe")
+
+    async def test_an_unbound_agent_is_left_alone(self):
+        """Hali pairing kutayotgan agentga urishmaymiz — u allaqachon kod so'ramoqda."""
+        state, _path = self.bound_state()
+        state.config["bind"] = None
+        writes = []
+        with mock.patch.object(agent, "save_config",
+                              lambda *_a, **_k: writes.append(1)):
+            await self.drive([1.0] * 5, state)
+        self.assertEqual(writes, [])
+
+    async def test_the_flap_needs_consecutive_short_sessions(self):
+        state, _path = self.bound_state()
+        short = agent.FLAP_SESSION_SECONDS - 1
+        long = agent.FLAP_SESSION_SECONDS + 30
+        await self.drive([short, long, short, long, short, long], state)
+        self.assertEqual(state.config["bind"], "beefcafe")
 
 
 if __name__ == "__main__":

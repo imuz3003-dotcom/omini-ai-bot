@@ -50,8 +50,9 @@ tashqarisiga yo'q). `.bat` faylni ikki marta bosing; konsol shuni ko'rsatadi:
 ```
 
 Telegram'da `/pair 483920` yozing → `✅ … qurilmangiz bo'lib ulandi`. Shundan
-keyin `agent.json`da imzo saqlangan bo'ladi: deraza yopilib-qayta ochilsa ham
-`/pair` shart emas. Konsol derazasi yopilsa agent to'xtaydi.
+keyin `agent.json`da imzo saqlangan bo'ladi: deraza yopilib-qayta ochilsa ham,
+bot Render'da qayta ishga tushsa (deploy) ham `/pair` shart emas — agent o'z
+imzosi bilan jimgina qayta qabul qilinadi. Konsol derazasi yopilsa agent to'xtaydi.
 
 - Config: `%APPDATA%\omini-agent\agent.json`
 - Butun sozlamani yangilash (yangi `agent_id` va yangi kod):
@@ -118,6 +119,7 @@ chaqiradi. Xavfli bo'lmaganlar tasdiq so'ramaydi. Chegaralar:
 |---|---|---|
 | `!! Bot: Bu qurilma ro'yxatda yo'q` (agent konsolida) | qurilma hali `/pair` yozmagan yoki `/unpair` qilingan | agent yangi kod ko'rsatadi — o'shani yozing |
 | `⛔ Imzo tekshiruvidan o'tmadi` | `DEVICE_SECRET` almashtirilgan | qurilmalarni qayta `/pair` yozing |
+| Konsolda hech narsa chiqmaydi, lekin `/ls` `📴 onlayn emas` deb javob beradi | Render proksi rad etish kodini (~21 s kechikib) yetkazmaydi — agent jimgina qayta-qayta ulanib uziladi | 3 qisqa ulanishdan keyin agent imzosini o'zi tashlab, `>> Telegram'da /pair …` kodini ko'rsatadi; shuni yozing |
 | `📴 "…" hozir onlayn emas` | agent o'chgan yoki interneti yo'q | agentni ishga tushiring |
 | `⏱ "…" 10 soniyada javob bermadi` | juda katta katalog yoki sekin tarmoq | `/cd` bilan torroq joyga kiring (`/cp`, `/get` kabi sekin amallar uchun chegara 60 s) |
 | `Kod noto'g'ri yoki muddati o'tgan` | 10 daqiqa o'tdi / xato raqam | agent kodni qayta ko'rsatadi; 5 marta xato qilsangiz 10 daqiqa kuting |
@@ -142,3 +144,10 @@ hech qaerga (`.env`, chat, screenshot) yozmang. Biror qurilmani ishonchsiz deb
 bilsangiz — `/unpair` bilan o'chiring. Barcha qurilmani birdaniga yaroqsiz qilish
 uchun dashboard'da `DEVICE_SECRET` ni almashtiring: agentlar rad etilib yangi kod
 so'raydi, siz ularni qayta `/pair` yozmaguningizcha hech biri ishlamaydi.
+
+`/unpair` haqidagi ochig'i: imzo holat bilan emas, `DEVICE_SECRET` bilan
+tekshiriladi (chunki Render Free har restart'da ro'yxatni o'chiradi). Shuning
+uchun `/unpair` bloki faqat **ishlayotgan protsessda** yashaydi — bot qayta ishga
+tushsa, o'sha qurilma o'z imzosi bilan yana qabul qilinadi. Agar biror qurilmani
+butunlay yaroqsiz qilish kerak bo'lsa, `DEVICE_SECRET` ni almashtiring (bu barcha
+imzolarni bir yoqdan o'chiradi) va qurilmadagi `agent.json` ni o'chiring.

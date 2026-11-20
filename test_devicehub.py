@@ -193,6 +193,55 @@ class Attach(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(devicehub.DeviceError):
             await self.instance.attach(AGENT, socket, bind=bind_of(user_id=99), owner_user_id=99)
 
+    async def test_readmitted_after_a_restart_without_pairing(self):
+        """`bind` HMAC bilan holatsiz tekshiriladi: ro'yxat restart'da o'chadi,
+        lekin imzo to'g'ri bo'lsa qurilma qayta `/pair` yozmasdan kiradi."""
+        instance = hub()
+        socket = FakeSocket()
+        await instance.attach(AGENT, socket, bind=bind_of(user_id=42), owner_user_id=42,
+                              name="desk-pc", root="C:/Users/me")
+        await settle()
+        devices = instance.devices_of(42)
+        self.assertEqual(len(devices), 1, "imzo bo'yicha qayta qabul qilinmadi")
+        self.assertEqual(socket.closed, None)
+        self.assertTrue(devices[0]["online"])
+        self.assertEqual(devices[0]["name"], "desk-pc")
+        self.assertEqual(devices[0]["root"], "C:/Users/me")
+
+    async def test_readmit_of_a_forged_bind_is_refused(self):
+        instance = hub()
+        socket = FakeSocket()
+        with self.assertRaises(devicehub.DeviceError):
+            await instance.attach(AGENT, socket, bind=bind_of(user_id=42, secret="boshqa"),
+                                  owner_user_id=42, name="desk-pc", root="C:/Users/me")
+        await settle()
+        self.assertEqual(socket.closed, 4401)
+        self.assertEqual(instance.devices_of(42), [])
+
+    async def test_readmit_with_a_nonthex_bind_is_refused_not_a_crash(self):
+        """`bind` tashqi kadr: `hmac.compare_digest` ASCII bo'lmagan satr bilan
+        `TypeError` beradi — uni ham 4401 rad etishiga aylantirish kerak."""
+        instance = hub()
+        socket = FakeSocket()
+        with self.assertRaises(devicehub.DeviceError):
+            await instance.attach(AGENT, socket, bind="é" * 64, owner_user_id=42,
+                                  name="desk-pc", root="C:/Users/me")
+        await settle()
+        self.assertEqual(socket.closed, 4401)
+        self.assertEqual(instance.devices_of(42), [])
+
+    async def test_readmit_counts_toward_the_device_limit(self):
+        instance = hub()
+        for index in range(devicehub.MAX_DEVICES_PER_USER):
+            agent = f"{index:032x}"
+            await instance.attach(agent, FakeSocket(), bind=bind_of(agent_id=agent, user_id=42),
+                                  owner_user_id=42, name="desk", root="C:/x")
+        sixth = "f" * 32
+        with self.assertRaises(devicehub.DeviceError):
+            await instance.attach(sixth, FakeSocket(), bind=bind_of(agent_id=sixth, user_id=42),
+                                  owner_user_id=42, name="desk", root="C:/x")
+        self.assertEqual(len(instance.devices_of(42)), devicehub.MAX_DEVICES_PER_USER)
+
     async def test_pending_socket_receives_bound_frame(self):
         instance = hub()
         instance.register(AGENT, "desk-pc", "C:/Users/me")

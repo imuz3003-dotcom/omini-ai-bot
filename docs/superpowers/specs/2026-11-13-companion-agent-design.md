@@ -1,8 +1,8 @@
 # omini AI — Qurilma boshqaruv agenti (companion) dizayni
 
-Sana: 2026-11-13 · Holat: 1-5-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
+Sana: 2026-11-13 · Holat: 1-6-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
 `agent.py`, `devicehub.py` + handlerlar, ishga tushirish hujjati, AI qurilma
-vositalari)
+vositalari, restart'dan keyin holatsiz qayta qabul)
 
 ## 1. Maqsad
 
@@ -110,14 +110,42 @@ deploy/restart'dan keyin hech kim qayta `/pair` yozmaydi.
    bot baribir `✅` yuboradi, lekin tagiga `📴 … onlayn emas` ogohlantirishini
    qo'shadi — soxta muvaffaqiyat ko'rsatmaydi.
 
+### Restart'dan keyin qayta qabul (holatsiz)
+
+Rostdagi holat: Render Free'da ro'yxat (`_devices`) restart bilan o'chadi, agent
+esa `agent.json`dagi eski `bind`i bilan keladi. Bu imzo HMAC bo'lgani uchun uni
+qayta hisoblash mumkin — `attach()` ro'yxatda yozuv bo'lmasa `_rebuild_from_bind()`
+orqali `bind`ni `DEVICE_SECRET` bilan qayta tekshiradi va Device'ni o'zi yasaydi
+(nomi va ildizi `hello` kadridan olinadi). Shunda deploydan keyin hech qaysi
+foydalanuvchi qayta `/pair` yozmaydi, AI qurilma vositalari ham yo'qolib qolmaydi.
+Limit (5 qurilma) tekshirilgandan keyin ro'yxatga tushadi: `_go_online` rad etsa,
+yangi yozuv orqaga qaytariladi.
+
 ### Binding bekor qilinishi (`/unpair`)
 
-`/unpair` qurilma yozuvini o'chiradi va kanalni `4403` bilan yopadi; eski `bind`
-endi `4401` («ro'yxatda yo'q») bilan rad etiladi. Agent kanal yopilish kodini
+`/unpair` qurilma yozuvini o'chiradi va kanalni `4403` bilan yopadi; shu
+protsessda `agent_id` `_revoked` to'plamiga tushadi, ya'ni endi keladigan imzo
+holatsiz qabul yo'lidan ham o'tmaydi. Agent kanal yopilish kodini
 `on_closed()`da ko'radi (`4401`/`4403`) — `agent.json`dan `bind` va
 `owner_user_id`ni o'chirib, keyingi ulanishda yangi kod so'raydi. Shuning uchun
 foydalanuvchi agentni o'chirib-yoqmasdan `/unpair` → `/pair` qilishi mumkin;
 e2e tekshiruvda shu zanjir to'liq ko'rildi.
+
+**Zaiflik (ataylab qabul qilindi):** `_revoked` xotira — restart bilan o'chadi,
+`bind` esa HMAC — abadiy. Shuning uchun `/unpair` qilingan qurilma bot qayta ishga
+tushganda o'z imzosi bilan yana kira oladi. Abadiy bloklash yo'li bitta:
+`DEVICE_SECRET` ni almashtirish (barcha imzolarni bir yoqdan yaroqsiz qiladi) va
+qurilmadagi `agent.json`ni o'chirish. Holatni bazaga yozish bu zaiflikni yopa
+olmas edi, chunki Render Free'da baza ham o'chadi.
+
+### Proksi rad etish kodini yashiradi (agentning o'zi davolaydi)
+
+Render proksi botning `4401` yopilish kadrasini mijozga ~21 sekunddan keyin
+yetkazadi — agent `1006` ko'radi, `on_closed()` ishlamaydi va u jimgina
+qayta-qayta ulanib aylanib qoladi (e2e: 4 sekundda 83 urinish). Shuning uchun
+`serve()` qo'shimcha belgini kuzatadi: ketma-ket 3 marta 15 sekunddan qisqa
+sessiya bo'lsa va `bind` mavjud bo'lsa, imzoni o'zi tashlaydi (`reset_binding`) —
+keyingi sessiya ochiq-oydin `/pair` kodini so'raydi.
 
 ### Buyruq paytidagi tekshiruv
 
@@ -258,19 +286,28 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   `symlink` qochish, `.ssh` o'qish, `/rm` katalogga urinish → hammasi `⛔`;
   `/ls /cat /mk /mv /cp /get /put` → kutilgan natija. `ops.py` sof funksiya bo'lgani
   uchun TDD (RED → GREEN) shu yerda boshlanadi.
-- `test_devicehub.py` (42 test) — kod bir martaligi va muddati, `bind` HMAC tekshiruvi,
+- `test_devicehub.py` (46 test) — kod bir martaligi va muddati, `bind` HMAC tekshiruvi,
   begona `user_id`ning begona qurilmaga kira olmasligi, timeout xabari,
   kanal yopilsa `Future` tozalanishi, 5 qurilma chegarasi, xato kod urinishlarini
-  hisoblab foydalanuvchini vaqtincha bloklash.
+  hisoblab foydalanuvchini vaqtincha bloklash. 6-bosqich qo'shimchalari: ro'yxat
+  bo'shash (restart) ham imzo bo'yicha qayta qabul (`test_readmitted_after_a_restart_without_pairing`),
+  soxta imzo rad etiladi (`test_readmit_of_a_forged_bind_is_refused`) va ASCII bo'lmagan
+  `bind` ham `TypeError` emas, `4401` bo'ladi
+  (`test_readmit_with_a_nonthex_bind_is_refused_not_a_crash`), qayta qabul
+  ham 5 qurilma chegarasiga kiradi (`test_readmit_counts_toward_the_device_limit`),
+  `/unpair`dan keyin imzo qayta kirmaydi (`test_unpaired_agent_cannot_reconnect`).
 - `test_commands.py` → `DeviceCommands` (9 test, `feed_update` + `FakeHub` orqali) —
   `/pair` dispatcher'dan o'tadi, kanal bo'lmasa `/pair` ogohlantiradi, `/ls` natijasi
   chiroyli chiqadi, agent xato matni
   foydalanuvchiga yetadi, guruh chat'i qurilmaga hech qachon tegmaydi, `/put`
   caption'i qurilmaga `b64` bo'lib boradi, chegaradan ortiq hujjat yuklashdan oldin
   rad etiladi, `/get` bazani dekodlangan hujjat qilib qaytaradi.
-- `companion/test_agent.py` → `ServeRetry` — qayta-ulinish oraliqlari (1,2,4,8,16)
+- `companion/test_agent.py` → `ServeRetry` (41 test) — qayta-ulinish oraliqlari (1,2,4,8,16)
   va uzun sessiyadan keyin hisobning nolga qaytishi; `BindingRevoked` — `4401`/`4403`
-  kodli yopilish `bind`ni o'chiradi, oddiy uzilish uni saqlaydi.
+  kodli yopilish `bind`ni o'chiradi, oddiy uzilish uni saqlaydi; `FlappingHealsItself` —
+  ketma-ket 3 qisqa sessiya imzoni disk bilan birga o'chiradi, uzun sessiya hisobni
+  nolga qaytaradi, hali `bind`i bo'lmagan agentga urishilmaydi, va qisqa-uzun
+  aralash aylanish imzoni saqlaydi.
 - `test_device_ai.py` (33 test) — 5-bosqich: `DEVICE_TOOLS` deklaratsiyalari
   (`rm` bor, `get`/`put` yo'q), `build_config(with_devices=True)` tool'ni qo'shadi,
   `ensure_session` qurilma bor/yo'q holatini suhbatga oladi, `dispatch_tool` ruxsat
@@ -282,7 +319,7 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   haqiqiy `genai.types`
   obyektlari bilan yozilgan (`FakeChat` `send_message_stream`ni chunk ro'yxati bilan
   taqlid qiladi).
-- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 242 test, hammasi
+- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 251 test, hammasi
   tarmoqsiz va soatsiz (`skipped=1` — symlink testi Windows'da admin so'raydi).
 - Bir martalik e2e tekshiruv (kommit qilinmaydi): haqiqiy `aiohttp` server + haqiqiy
   `agent.serve()` — pairing, `agent.json`ga `bind` yozilishi, `ls/cat/get/mkdir/cd`,
@@ -307,6 +344,15 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
    tool-loop va `ToolLoopLimit`; `bot.py`da `dispatch_tool`/`tool_dispatch`,
    `DEVICE_BLOCK` va `ensure_session`ning qurilma belgisi. Agent tomonida hech
    narsa o'zgarmadi: chegara, deny-ro'yxat va ildiz qorovuli avvalgi-dayin.
+6. ✅ Restart'dan keyin qayta `/pair` shart emas — jonli xato: har deploydan
+   so'ng `_devices` bo'sh qolardi, agent eski imzosi bilan rad etilardi, Render
+   proksi esa `4401`ni yashirib agentni jimgina aylantirardi; natijada
+   `HUB.devices_of()` bo'sh → `ensure_session` suhbatni vositasiz ochadi → AI
+   "papka yaratib ber"ga qo'lda buyruq matnini qaytarardi. `devicehub.attach`
+   endi ro'yxat yozuvi bo'lmasa imzoni qayta hisoblab Device yasaydi (`hello`
+   kadridagi `name`/`root` bilan), `_revoked` to'plami `/unpair`ni shu protsessda
+   himoya qiladi, agent tomonda esa 3 qisqa sessiya imzoning o'zini tashlab
+   ochiq-oydin `/pair` so'raydi. (`protocol.hello`da `root` maydoni qo'shildi.)
 
 ## 11. Qabul qilingan zaifliklar
 
@@ -320,6 +366,11 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   qurilmani abadiy bloklash uchun `DEVICE_SECRET` almashtiriladi — barcha agentlar
   `4401` bilan rad etilib `bind`ini o'zi tashlaydi, lekin ular yangi kod so'rab
   turaveradi: ega qayta `/pair` yozmagunicha hech biri ishlamaydi.
+  6-bosqichdagi `bind`siz qabul buni biroz yomonlashtiradi: `/unpair` bloki
+  (`_revoked`) xotirada yashaydi, restart bilan esa ro'yxat ham, blok ham o'chadi —
+  ya'ni bot qayta ishga tushganda `/unpair` qilingan qurilma o'z eski imzosi bilan
+  yana kira oladi. Holat-bazaga yozish bu muammoni yechmas edi (baza ham o'chadi),
+  shuning uchun yagona ishonchli yo'l — `DEVICE_SECRET` ni almashtirish.
 - **Sandbox — bu agent ichidagi siyosat**, OS darajasidagi jail emas. Agent sizning
   huquqingizda ishlaydi.
 - **Kutilayotgan pairing kodlari va joriy katalog in-memory** — Render restart'ida

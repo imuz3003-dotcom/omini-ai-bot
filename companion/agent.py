@@ -30,6 +30,10 @@ REGISTER_PATH = "/device/register"
 BACKOFF_BASE = 1.0
 BACKOFF_CAP = 30.0
 STABLE_SESSION_SECONDS = 60.0
+# Shu davomdan qisqa sessiya — "ulanib, darhol uzilib". Ketma-ket uchta
+# bunday sessiya imzo endi yaroqsiz degani.
+FLAP_SESSION_SECONDS = 15.0
+FLAP_LIMIT = 3
 # Bot bu kod bilan yopadi: «bindinging endi yaroqsiz, qayta /pair yoz».
 REVOKED_CLOSE_CODES = frozenset({4401, 4403})
 
@@ -217,7 +221,8 @@ async def session(state: AgentState) -> None:
                                      max_msg_size=protocol.MAX_FRAME_BYTES) as socket:
             await socket.send_str(protocol.encode(protocol.hello(
                 state.config["agent_id"], state.config["name"],
-                bind=state.config.get("bind"), owner_user_id=state.config.get("owner_user_id"))))
+                bind=state.config.get("bind"), owner_user_id=state.config.get("owner_user_id"),
+                root=(state.config.get("roots") or [None])[0])))
             if not state.bound:
                 code = await request_code(state)
                 print(f">> Telegram'da /pair {code} yozing (10 daqiqa ichida).")
@@ -236,6 +241,7 @@ async def serve(state: AgentState, connect=session, sleep=asyncio.sleep,
     nolga qaytadi.
     """
     attempt = 0
+    flaps = 0
     while True:
         started = now()
         try:
@@ -244,7 +250,18 @@ async def serve(state: AgentState, connect=session, sleep=asyncio.sleep,
             raise
         except Exception as error:
             logging.warning("Ulanish uzildi: %s", error)
-        if now() - started >= STABLE_SESSION_SECONDS:
+        length = now() - started
+        flaps = 0 if length >= FLAP_SESSION_SECONDS else flaps + 1
+        if flaps >= FLAP_LIMIT and getattr(state, "bound", False):
+            # Render proksi 4401'ni mijozga ~21 sekundda yetkazadi, shuning
+            # uchun `on_closed` deyarli ishlamaydi. Uchta qisqa ulanish — yagona
+            # belgi: imzoni o'chiramiz, keyingi sessiya yangi /pair kodini so'raydi.
+            logging.warning("Ketma-ket %d marta %g sekunddan qisqa ulanish — "
+                            "binding yangilanadi, Telegramda /pair kerak.",
+                            FLAP_LIMIT, FLAP_SESSION_SECONDS)
+            reset_binding(state)
+            flaps = 0
+        if length >= STABLE_SESSION_SECONDS:
             attempt = 0
             delay = backoff(0)
         else:

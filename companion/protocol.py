@@ -31,9 +31,9 @@ def result_error(cmd_id, error) -> dict:
     return {"v": PROTOCOL_VERSION, "type": "res", "id": str(cmd_id), "ok": False, "error": str(error)}
 
 
-def hello(agent_id, name, bind=None, owner_user_id=None) -> dict:
+def hello(agent_id, name, bind=None, owner_user_id=None, root=None) -> dict:
     return {"v": PROTOCOL_VERSION, "type": "hello", "agent_id": str(agent_id), "name": str(name),
-            "bind": bind, "owner_user_id": owner_user_id}
+            "bind": bind, "owner_user_id": owner_user_id, "root": root}
 
 
 def bound(bind, owner_user_id) -> dict:
