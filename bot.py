@@ -114,11 +114,17 @@ async def send_long(message, text: str, user_id: int, markup=None, sources=None)
     return last
 
 
-async def notify(message, text: str, markup=None):
+async def notify(message, text: str, markup=None, user_id=None):
+    sent = None
     try:
-        return await message.answer(text, reply_markup=markup, parse_mode="HTML")
+        sent = await message.answer(text, reply_markup=markup, parse_mode="HTML")
     except TelegramAPIError:
-        return await message.answer(core.strip_markdown(text), reply_markup=markup)
+        sent = await message.answer(core.strip_markdown(text), reply_markup=markup)
+    # `tracked`ga yozmasak, «Suhbatni tozalash» faqat foydalanuvchi xabarini o'chirardi.
+    owner = user_id if user_id is not None else (message.from_user.id if message.from_user else None)
+    if sent is not None and owner is not None:
+        core.store.track_msg(owner, sent.message_id)
+    return sent
 
 
 @asynccontextmanager
@@ -747,9 +753,7 @@ async def restart_chat(target_message, user_id: int, chat_id: int, note: str = "
     core.store.drop_history(user_id)
     core.reset_session(user_id)
     ensure_session(user_id, fresh=True)
-    sent = await notify(target_message, note, markup=main_keyboard())
-    if sent:
-        core.store.track_msg(user_id, sent.message_id)
+    await notify(target_message, note, markup=main_keyboard(), user_id=user_id)
 
 
 @dp.message(Command("new"))
@@ -1985,10 +1989,7 @@ async def show_users_panel(target, page: int = 0, search: str = None):
         panel_search[uid] = search
     text = users_panel_text(rows, total, page, panel_search.get(uid))
     keyboard = users_keyboard(rows, total, page)
-    try:
-        return await target.answer(text, reply_markup=keyboard, parse_mode="HTML")
-    except TelegramAPIError:
-        return await target.answer(core.strip_markdown(text)[:4000], reply_markup=keyboard)
+    return await notify(target, text, markup=keyboard, user_id=uid)
 
 
 @dp.message(Command("users"))

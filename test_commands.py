@@ -100,6 +100,13 @@ class FakeSession:
     def names(self):
         return [name for name, _ in self.calls]
 
+    def bot_msg_ids(self):
+        """Bot yuborgan xabarlarning ID'lari — Telegram haqiqatda shularni qaytaradi."""
+        return sorted(self._texts)
+
+    def deleted_msg_ids(self):
+        return [p["message_id"] for name, p in self.calls if name == "DeleteMessage"]
+
 
 def update_of(text=None, user_id=USER, chat_id=None, chat_type="private", caption=None):
     chat_id = chat_id if chat_id is not None else user_id
@@ -794,6 +801,87 @@ class DeviceCommands(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[0]["document"].filename, "hisobot.txt")
         self.assertEqual(sent[0]["document"].data, b"salom", "base64 qayta ochilmadi")
         self.assertIn("hisobot.txt", sent[0]["caption"])
+
+
+class ClearChat(unittest.IsolatedAsyncioTestCase):
+    """«🧹 Suhbatni tozalash» / `/new` botning xabarlarini ham o'chiradi.
+
+    Nima uchun aynan bu yerda: `wipe_messages` faqat `tracked` jadvalidagi
+    msg_id'larni yuboradi. AI javoblari yozib qo'yilardi, ammo `notify()`
+    orqali chiquvchi xabarlar (menyu, sozlamalar, qurilma javoblari,
+    ogohlantirishlar) ro'yxatga tushmasdi — natijada tozalashdan keyin faqat
+    foydalanuvchining xabari yo'qolib, botnikisi chiqib qolardi.
+    """
+
+    CLEARED = 7896336812  # alohida id: `legacy_swept` pref'i boshqa testlarga aralashmasligi uchun
+    MENU_AUTHOR = 7896336821
+    CLICKER = 7896336822
+
+    def setUp(self):
+        self.session = FakeSession()
+        app.bot.session = self.session
+
+        async def fake_ask_ai(message, prompt, user_id, markup=None):
+            pass
+
+        self.enterContext(patch.object(app, "ask_ai", fake_ask_ai))
+        app.core.store.touch_user(self.CLEARED, username="tester", first_name="Test")
+        app.core.store.set_pref(self.CLEARED, "legacy_swept", True)
+
+    def tearDown(self):
+        for uid in (self.CLEARED, self.MENU_AUTHOR, self.CLICKER):
+            app.core.store.untrack_msgs(uid)
+
+    async def typed(self, text, message_id):
+        payload = update_of(text, user_id=self.CLEARED, chat_id=self.CLEARED)
+        payload["message"]["message_id"] = message_id
+        await app.dp.feed_update(app.bot, types.Update.model_validate(payload, context={"bot": app.bot}))
+
+    async def test_clear_deletes_the_bots_notice_messages(self):
+        await self.typed("/stop", 500)  # javob — `notify()` orqali, AI'ga umuman kirmaydi
+        notice = self.session.bot_msg_ids()[-1]
+        self.session.calls.clear()
+
+        await self.typed("/new", 501)
+
+        deleted = self.session.deleted_msg_ids()
+        self.assertIn(notice, deleted, "botning notify() xabari tozalashdan keyin qoldi")
+        self.assertIn(501, deleted, "foydalanuvchining xabari o'chirilmadi")
+
+    async def test_every_notice_command_reply_is_deleted(self):
+        """`notify()` bilan javob beradigan har bir buyruq tozalashga tushadi."""
+        for number, command in enumerate(("/help", "/settings", "/notes"), start=600):
+            with self.subTest(command=command):
+                await self.typed(command, number)
+                reply = self.session.bot_msg_ids()[-1]
+                self.session.calls.clear()
+
+                await self.typed("/new", number + 100)
+
+                self.assertIn(reply, self.session.deleted_msg_ids(),
+                              f"{command} javobi tozalashdan keyin qoldi")
+
+    async def test_notice_is_tracked_for_the_given_user_not_the_author(self):
+        """Guruhda menyu A'ning xabari, tugmani B bosdi — yangi belgi B'ning
+        ro'yxatiga tushishi kerak, aks holda B uni keyin o'chira olmaydi."""
+        menu = update_of("menyu", user_id=self.MENU_AUTHOR)["message"]
+        message = types.Message.model_validate(menu, context={"bot": app.bot})
+
+        sent = await app.notify(message, "🔄 Yangi suhbat boshlandi!", user_id=self.CLICKER)
+
+        self.assertIn(sent.message_id, app.core.store.tracked_msgs(self.CLICKER))
+        self.assertNotIn(sent.message_id, app.core.store.tracked_msgs(self.MENU_AUTHOR))
+
+    async def test_clear_keeps_the_fresh_chat_marker(self):
+        """«Yangi suhbat boshlandi» — yangi suhbatning boshi, u o'chirilmaydi."""
+        await self.typed("/stop", 500)
+        self.session.calls.clear()
+
+        await self.typed("/new", 501)
+
+        marker = self.session.bot_msg_ids()[-1]
+        self.assertIn("Yangi suhbat", self.session.texts()[-1])
+        self.assertNotIn(marker, self.session.deleted_msg_ids(), "yangi belgi ham o'chirib yuborildi")
 
 
 if __name__ == "__main__":

@@ -302,6 +302,10 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   foydalanuvchiga yetadi, guruh chat'i qurilmaga hech qachon tegmaydi, `/put`
   caption'i qurilmaga `b64` bo'lib boradi, chegaradan ortiq hujjat yuklashdan oldin
   rad etiladi, `/get` bazani dekodlangan hujjat qilib qaytaradi.
+- `test_commands.py` → `ClearChat` (4 test) — «🧹 Suhbatni tozalash» / `/new` botning
+  `notify()` xabarlarini ham o'chiradi (menyu, sozlamalar, qurilma javoblari), yangi
+  «🔄 Yangi suhbat boshlandi!» belgisini esa qoldiradi, va guruhda belgi menyu muallifiga
+  emas, tugmani bosgan odamga yoziladi.
 - `companion/test_agent.py` (50 test) → `ServeRetry` — qayta-ulinish oraliqlari (1,2,4,8,16)
   va uzun sessiyadan keyin hisobning nolga qaytishi; `BindingRevoked` — `4401`/`4403`
   kodli yopilish `bind`ni o'chiradi, oddiy uzilish uni saqlaydi; `FlappingHealsItself` —
@@ -322,7 +326,7 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   haqiqiy `genai.types`
   obyektlari bilan yozilgan (`FakeChat` `send_message_stream`ni chunk ro'yxati bilan
   taqlid qiladi).
-- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 263 test, hammasi
+- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 267 test, hammasi
   tarmoqsiz va soatsiz (`skipped=1` — symlink testi Windows'da admin so'raydi).
 - Bir martalik e2e tekshiruv (kommit qilinmaydi): haqiqiy `aiohttp` server + haqiqiy
   `agent.serve()` — pairing, `agent.json`ga `bind` yozilishi, `ls/cat/get/mkdir/cd`,
