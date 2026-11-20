@@ -10,12 +10,14 @@ Ishga tushirish:  python companion/agent.py --url https://bot.example --root C:/
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
 import secrets
 import sys
 import time
+import webbrowser
 from pathlib import Path
 
 try:
@@ -27,6 +29,10 @@ except ImportError:  # `python companion/agent.py`da paket konteksti bo'lmaydi
 
 WS_PATH = "/device/ws"
 REGISTER_PATH = "/device/register"
+# Mijoz exe'ni ikki marta bosadi: hech qanday parametr bermaydi. Shuning uchun
+# birinchi ishga tushirishning o'zi yetarli bo'lishi kerak.
+DEFAULT_BOT_URL = "https://omini-ai-bot.onrender.com"
+DEFAULT_BOT_USERNAME = "omniai_app_bot"
 BACKOFF_BASE = 1.0
 BACKOFF_CAP = 30.0
 STABLE_SESSION_SECONDS = 60.0
@@ -56,6 +62,19 @@ def new_config(bot_url, roots, name) -> dict:
         "roots": [str(Path(root)) for root in roots],
         "deny": list(ops.DEFAULT_DENY),
     }
+
+
+def bootstrap(url=None, root=None, name="qurilma", username=None, env=None, home=None) -> dict:
+    """Birinchi ishga tushirish: hech narsa berilmasa ham ishlaydi.
+
+    Tartib: aniq parametr > muhit o'zgaruvchisi > standart. `home` alohida
+    parametr — sinovda haqiqiy uy papkasiga tegmaslik uchun.
+    """
+    env = env or {}
+    config = new_config(url or env.get("OMINI_BOT_URL") or DEFAULT_BOT_URL,
+                        root or [home or Path.home()], name)
+    config["bot_username"] = username or env.get("OMINI_BOT_USERNAME") or DEFAULT_BOT_USERNAME
+    return config
 
 
 def load_config(path):
@@ -92,6 +111,7 @@ class AgentState:
     def __init__(self, config: dict, path):
         self.config = config
         self.path = Path(path)
+        self.link_shown = False   # brauzerga havola bir marta ochiladi
 
     @property
     def bound(self) -> bool:
@@ -115,6 +135,23 @@ def on_closed(state: AgentState, socket) -> None:
     """Kanal yopilish sababidan kelib chiqadigan siyosat (tarmoqqa bog'liq emas)."""
     if getattr(socket, "close_code", None) in REVOKED_CLOSE_CODES:
         reset_binding(state)
+
+
+def announce_pairing(state: AgentState, code, open_browser=None) -> str:
+    """Kodni konsolga yozadi va Telegram havolasini ochadi — jarayonda bir marta.
+
+    Nima uchun: mijoz `/pair 483920`ni yozishi shart emas — havolani bossa
+    Telegram'da xabar tayyor turadi, unga faqat «Send» qoladi. Qayta-ulishlarda
+    brauzer takror ochilmasligi kerak, aks holda ish stoli shovqin bo'ladi.
+    """
+    link = protocol.pairing_link(state.config.get("bot_username") or DEFAULT_BOT_USERNAME, code)
+    print(f">> Telegram'da /pair {code} yozing (10 daqiqa ichida).")
+    print(f">> Yoki shu havolani bosing: {link}")
+    if state.config.get("open_link", True) and not state.link_shown:
+        state.link_shown = True
+        with contextlib.suppress(Exception):
+            (open_browser or webbrowser.open)(link)
+    return link
 
 
 def _op_get(sandbox, **args) -> dict:
@@ -224,8 +261,7 @@ async def session(state: AgentState) -> None:
                 bind=state.config.get("bind"), owner_user_id=state.config.get("owner_user_id"),
                 root=(state.config.get("roots") or [None])[0])))
             if not state.bound:
-                code = await request_code(state)
-                print(f">> Telegram'da /pair {code} yozing (10 daqiqa ichida).")
+                announce_pairing(state, await request_code(state))
             print(f">> {state.config['name']} botga ulandi.")
             await pump(socket, state)
             on_closed(state, socket)
@@ -273,28 +309,35 @@ async def serve(state: AgentState, connect=session, sleep=asyncio.sleep,
 def main(argv=None) -> int:
     import argparse
 
+    sys.stdout.reconfigure(line_buffering=True)   # quvurga yozganda ham satr ko'rilsin
     parser = argparse.ArgumentParser(description="omini AI qurilma agenti")
     parser.add_argument("--config", default=str(default_config_path()))
     parser.add_argument("--url", help="botning https manzili")
     parser.add_argument("--root", action="append", help="ruxsat etilgan katalog (takrorlanadi)")
     parser.add_argument("--name", default=os.environ.get("COMPUTERNAME") or "qurilma")
     parser.add_argument("--pair", action="store_true", help="bindingni o'chirib, qayta /pair so'rash")
+    parser.add_argument("--bot-username", default=None, help="Telegram botining username'i")
+    parser.add_argument("--no-open", action="store_true",
+                        help="pairing havolasini brauzerda ochmasin")
     arguments = parser.parse_args(argv)
 
     path = Path(arguments.config)
     config = load_config(path)
     if config is None or arguments.pair:
-        if not arguments.url or not arguments.root:
-            parser.error("birinchi ishga tushirishda --url va --root kerak")
-        config = new_config(arguments.url, arguments.root, arguments.name)
+        config = bootstrap(arguments.url, arguments.root, arguments.name,
+                           username=arguments.bot_username, env=os.environ)
     else:
         if arguments.url:
             config["bot_url"] = arguments.url.rstrip("/")
         if arguments.root:
             config["roots"] = [str(Path(root)) for root in arguments.root]
+        if arguments.bot_username:
+            config["bot_username"] = arguments.bot_username
+    if arguments.no_open:
+        config["open_link"] = False
     save_config(path, config)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    print(f">> Config: {path} | ildizlar: {', '.join(config['roots'])}")
+    print(f">> Config: {path} | bot: {config['bot_url']} | ildizlar: {', '.join(config['roots'])}")
     try:
         asyncio.run(serve(AgentState(config, path)))
     except KeyboardInterrupt:

@@ -462,5 +462,91 @@ class FlappingHealsItself(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.config["bind"], "beefcafe")
 
 
+class FirstRunWithoutArguments(unittest.TestCase):
+    """`omini-agent.exe` ikki marta bosiladi — hech qanday parametr yo'q.
+
+    Nima uchun kerak: mijoz Python, terminal va `--root` ma'nosini bilmaydi.
+    Shuning uchun birinchi ishga tushirish o'zi yetarli bo'lishi kerak: bot
+    manzili, ildiz (uy papkasi) va ism (kompyuter nomi) o'zi tanlanadi.
+    """
+
+    def test_defaults_come_from_home_and_the_live_bot(self):
+        config = agent.bootstrap(name="desk-pc", env={}, home=Path("C:/Users/me"))
+        self.assertEqual(config["bot_url"], agent.DEFAULT_BOT_URL)
+        self.assertEqual(config["roots"], [str(Path("C:/Users/me"))])
+        self.assertEqual(config["name"], "desk-pc")
+        self.assertEqual(config["bot_username"], agent.DEFAULT_BOT_USERNAME)
+
+    def test_a_fresh_agent_has_an_id_but_no_binding(self):
+        config = agent.bootstrap(name="desk-pc", env={}, home=Path("C:/Users/me"))
+        self.assertRegex(config["agent_id"], r"^[0-9a-f]{32}$")
+        self.assertIsNone(config["bind"])
+
+    def test_environment_overrides_the_defaults(self):
+        config = agent.bootstrap(name="pc", env={
+            "OMINI_BOT_URL": "https://test.example/", "OMINI_BOT_USERNAME": "test_bot"},
+            home=Path("C:/Users/me"))
+        self.assertEqual(config["bot_url"], "https://test.example")
+        self.assertEqual(config["bot_username"], "test_bot")
+
+    def test_explicit_arguments_beat_environment(self):
+        config = agent.bootstrap(url="https://other.example", root=["D:/ish"], name="pc",
+                                 env={"OMINI_BOT_URL": "https://test.example"},
+                                 home=Path("C:/Users/me"))
+        self.assertEqual(config["bot_url"], "https://other.example")
+        self.assertEqual(config["roots"], [str(Path("D:/ish"))])
+
+
+class PairingAnnouncement(unittest.TestCase):
+    """Kod qanday ko'rsatiladi: nusxalash uchun matn + bosish uchun havola."""
+
+    def state(self, **override):
+        config = {
+            "bot_url": "https://bot.example", "agent_id": "a1b2" * 8, "name": "pc",
+            "owner_user_id": None, "bind": None, "roots": ["C:/Users/me"], "deny": [],
+            "bot_username": "omniai_app_bot",
+        }
+        config.update(override)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return agent.AgentState(config, Path(directory.name) / "agent.json")
+
+    def test_link_is_returned_and_opened_once(self):
+        opened = []
+        state = self.state()
+        link = agent.announce_pairing(state, "483920", open_browser=opened.append)
+        self.assertEqual(link, "https://t.me/omniai_app_bot?text=%2Fpair%20483920")
+        self.assertEqual(opened, [link])
+        agent.announce_pairing(state, "483920", open_browser=opened.append)
+        self.assertEqual(len(opened), 1, "qayta-ulishda brauzer yana ochildi")
+
+    def test_no_open_flag_never_touches_the_browser(self):
+        opened = []
+        state = self.state(open_link=False)
+        link = agent.announce_pairing(state, "123456", open_browser=opened.append)
+        self.assertEqual(opened, [])
+        self.assertIn("123456", link)
+
+    def test_a_missing_browser_does_not_stop_the_agent(self):
+        def boom(_link):
+            raise OSError("brauzer yo'q")
+
+        link = agent.announce_pairing(self.state(), "111111", open_browser=boom)
+        self.assertIn("https://t.me/", link)
+
+    def test_old_config_falls_back_to_the_default_username(self):
+        state = self.state()
+        del state.config["bot_username"]
+        link = agent.announce_pairing(state, "111111", open_browser=lambda _l: None)
+        self.assertEqual(link,
+                         f"https://t.me/{agent.DEFAULT_BOT_USERNAME}?text=%2Fpair%20111111")
+
+    def test_the_command_is_printed_for_copying(self):
+        with mock.patch("builtins.print") as printed:
+            agent.announce_pairing(self.state(), "483920", open_browser=lambda _l: None)
+        text = " ".join(str(call.args[0]) for call in printed.call_args_list)
+        self.assertIn("/pair 483920", text)
+
+
 if __name__ == "__main__":
     unittest.main()

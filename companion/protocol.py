@@ -7,6 +7,7 @@ qidirishdan ko'ra shu yerda arzon.
 
 import json
 import secrets
+from urllib.parse import quote
 
 PROTOCOL_VERSION = 1
 FRAME_TYPES = ("cmd", "res", "hello", "bound", "err", "ping", "pong")
@@ -55,6 +56,15 @@ def pong() -> dict:
 
 def new_id() -> str:
     return secrets.token_hex(6)
+
+
+def pairing_link(bot_username, code) -> str:
+    """Telegram'da `/pair <kod>` xabarini tayyor holda ochadigan havola.
+
+    `safe=""` shart: aks holda `/` qochilmaydi va `t.me` `?text=`ni butun
+    matn sifatida ko'rmaydi.
+    """
+    return f"https://t.me/{bot_username}?text={quote(f'/pair {code}', safe='')}"
 
 
 def describe_error(error) -> str:

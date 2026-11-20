@@ -4,3 +4,9 @@ __pycache__/
 bot_data.db
 bot.log*
 users.json
+
+# PyInstaller: exe'lar git'ga kirmaydi, ularni alohida tarqatamiz.
+build/
+dist/
+*.spec
+*.exe

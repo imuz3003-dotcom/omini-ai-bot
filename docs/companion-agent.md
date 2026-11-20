@@ -24,7 +24,44 @@ kerak bo'ladi** (bot logida `DEVICE_SECRET o'rnatilmagan` ogohlantirishi chiqadi
 `render.yaml`da bu kalit `sync: false` bilan turadi — ya'ni blueprint uni
 dashboard'dagi qiymat bilan almashtirmaydi, repositoriyda ham saqlanmaydi.
 
-## 1. Windows
+## 1. Windows — `omini-agent.exe` (Python talab qilmaydi)
+
+Exe — bitta fayl, o'rnatish va terminal shart emas. Uni ikki marta bosing:
+
+1. `dist\omini-agent.exe` ni istalgan joyga ko'chiring (masalan Ish stoli) va ikki
+   marta bosing.
+2. Ochilgan konsol shuni ko'rsatadi:
+
+   ```
+   >> Telegram'da /pair 483920 yozing (10 daqiqa ichida).
+   >> Yoki shu havolani bosing: https://t.me/omniai_app_bot?text=%2Fpair%20483920
+   >> LAPTOP-XXXX botga ulandi.
+   ```
+
+3. Havolani bosing → Telegram'da `/pair 483920` yozilgan xabar tayyor turadi →
+   faqat **Send** bosing → `✅ … qurilmangiz bo'lib ulandi`.
+
+Birinchi ishga tushirishda hech qanday parametr kerak emas: bot manzili
+`https://omini-ai-bot.onrender.com`, ildiz esa `%USERPROFILE%` (Desktop,
+Documents, Downloads hammasi ko'rinadi) o'zi tanlanadi. Sozlama
+`%APPDATA%\omini-agent\agent.json`da saqlanadi — shu fayl o'chirilsa hammasi
+qaytadan so'raladi.
+
+Exe git repositoriyasida yo'q (33 MB). Yangilash kerak bo'lsa (kod o'zgarsa) —
+Python'li kompyuterda bir marta:
+
+```
+powershell -ExecutionPolicy Bypass -File companion\build_exe.ps1
+```
+
+- Brauzer avtomatik ochilmasin desangiz: `omini-agent.exe --no-open` (havola
+  baribir konsolda ko'rinadi). Boshqa botga ulanmoqchi bo'lsangiz:
+  `--url https://… --root D:\ish`.
+- Antivirus PyInstaller fayllariga shubha bilan qarashi mumkin: ishga tushmasa,
+  o'sha papkani istisnolarga qo'shing (kod ochiq — `companion/agent.py`).
+- Deraza yopilsa agent to'xtaydi. Orqaga qaytarish uchun konsolni yopish yetadi.
+
+## 1b. Windows — Python orqali (`start_agent.bat`)
 
 Python 3.11+ kerak (python.org, o'rnatishda **Add python.exe to PATH**).
 

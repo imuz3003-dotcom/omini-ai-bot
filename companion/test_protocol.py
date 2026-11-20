@@ -132,5 +132,25 @@ class ErrorText(unittest.TestCase):
         self.assertEqual(json.loads(protocol.encode(frame))["data"]["text"], "salom дунё")
 
 
+class PairingLink(unittest.TestCase):
+    """`t.me/<bot>?text=/pair%20<code>` — mijoz Telegram'da xabarni yozmaydi,
+    faqat havolani bosadi. Python bilmagan kishi uchun yagona ish shu bo'lishi kerak."""
+
+    def test_link_prefills_the_pair_command(self):
+        self.assertEqual(
+            protocol.pairing_link("omniai_app_bot", "483920"),
+            "https://t.me/omniai_app_bot?text=%2Fpair%20483920",
+        )
+
+    def test_slash_and_space_are_escaped(self):
+        link = protocol.pairing_link("bot", "123456")
+        self.assertNotIn("/pair ", link)
+        self.assertIn("%2Fpair%20123456", link)
+
+    def test_code_is_stringified(self):
+        self.assertEqual(protocol.pairing_link("bot", 483920),
+                         "https://t.me/bot?text=%2Fpair%20483920")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,8 @@
 # omini AI — Qurilma boshqaruv agenti (companion) dizayni
 
-Sana: 2026-11-13 · Holat: 1-6-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
+Sana: 2026-11-13 · Holat: 1-7-bosqichlar yozildi (`companion/ops.py`, `protocol.py`,
 `agent.py`, `devicehub.py` + handlerlar, ishga tushirish hujjati, AI qurilma
-vositalari, restart'dan keyin holatsiz qayta qabul)
+vositalari, restart'dan keyin holatsiz qayta qabul, `omini-agent.exe`)
 
 ## 1. Maqsad
 
@@ -302,12 +302,15 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   foydalanuvchiga yetadi, guruh chat'i qurilmaga hech qachon tegmaydi, `/put`
   caption'i qurilmaga `b64` bo'lib boradi, chegaradan ortiq hujjat yuklashdan oldin
   rad etiladi, `/get` bazani dekodlangan hujjat qilib qaytaradi.
-- `companion/test_agent.py` → `ServeRetry` (41 test) — qayta-ulinish oraliqlari (1,2,4,8,16)
+- `companion/test_agent.py` (50 test) → `ServeRetry` — qayta-ulinish oraliqlari (1,2,4,8,16)
   va uzun sessiyadan keyin hisobning nolga qaytishi; `BindingRevoked` — `4401`/`4403`
   kodli yopilish `bind`ni o'chiradi, oddiy uzilish uni saqlaydi; `FlappingHealsItself` —
   ketma-ket 3 qisqa sessiya imzoni disk bilan birga o'chiradi, uzun sessiya hisobni
   nolga qaytaradi, hali `bind`i bo'lmagan agentga urishilmaydi, va qisqa-uzun
-  aralash aylanish imzoni saqlaydi.
+  aralash aylanish imzoni saqlaydi; `FirstRunWithoutArguments` — paramsiz birinchi
+  ishga tushirish defaultlar bilan config yasaydi (aniq parametr > env > standart);
+  `PairingAnnouncement` — havola formati, brauzer jarayonda bir marta ochilishi,
+  `open_link: False`da umumin ochilmasligi va brauzer xatosi agentni to'xtatmasligi.
 - `test_device_ai.py` (33 test) — 5-bosqich: `DEVICE_TOOLS` deklaratsiyalari
   (`rm` bor, `get`/`put` yo'q), `build_config(with_devices=True)` tool'ni qo'shadi,
   `ensure_session` qurilma bor/yo'q holatini suhbatga oladi, `dispatch_tool` ruxsat
@@ -319,7 +322,7 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   haqiqiy `genai.types`
   obyektlari bilan yozilgan (`FakeChat` `send_message_stream`ni chunk ro'yxati bilan
   taqlid qiladi).
-- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 251 test, hammasi
+- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 263 test, hammasi
   tarmoqsiz va soatsiz (`skipped=1` — symlink testi Windows'da admin so'raydi).
 - Bir martalik e2e tekshiruv (kommit qilinmaydi): haqiqiy `aiohttp` server + haqiqiy
   `agent.serve()` — pairing, `agent.json`ga `bind` yozilishi, `ls/cat/get/mkdir/cd`,
@@ -353,6 +356,15 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
    kadridagi `name`/`root` bilan), `_revoked` to'plami `/unpair`ni shu protsessda
    himoya qiladi, agent tomonda esa 3 qisqa sessiya imzoning o'zini tashlab
    ochiq-oydin `/pair` so'raydi. (`protocol.hello`da `root` maydoni qo'shildi.)
+7. ✅ Mijoz uchun bir tugma: `dist\omini-agent.exe` (PyInstaller, 33 MB) —
+   Python o'rnatilmagan kompyuterda ham ishlaydi. Birinchi ishga tushirish
+   paramsiz ham yetarli: `bootstrap()` tartibi aniq parametr > `OMINI_BOT_URL` /
+   `OMINI_BOT_USERNAME` > standart (`DEFAULT_BOT_URL`, uy papkasi, kompyuter nomi).
+   `announce_pairing()` konsolga kod bilan birga `t.me/…?text=%2Fpair%20<kod>`
+   havolasini chiqaradi va uni brauzerda **bir marta** ochadi — mijoz Telegram'da
+   faqat «Send» bosadi; `--no-open` (config'da `open_link: False`) buni
+   o'chiradi. Yig'ish `companion/build_exe.ps1` orqali; `build/`, `dist/`, `*.exe`
+   va `.spec` git'da emas — faylni alohida beramiz.
 
 ## 11. Qabul qilingan zaifliklar
 
@@ -375,3 +387,6 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   huquqingizda ishlaydi.
 - **Kutilayotgan pairing kodlari va joriy katalog in-memory** — Render restart'ida
   unutiladi. Bog'lanish (`bind`) esa yuqoridagi HMAC tufayli saqlanib qoladi.
+- **Exe imzosiz va 33 MB** (PyInstaller onefile). Ba'zi antiviruslar uni shubha
+  bilan qaraydi; kod ochiq, shuning uchun muqobba sifatida `start_agent.bat`
+  (Python orqali) yo'li ham hujjatda turadi.
