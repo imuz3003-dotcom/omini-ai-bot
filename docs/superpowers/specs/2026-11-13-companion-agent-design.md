@@ -326,7 +326,8 @@ bo'ladi. Qo'llab-quvvatlash hujjati: `docs/companion-agent.md`.
   haqiqiy `genai.types`
   obyektlari bilan yozilgan (`FakeChat` `send_message_stream`ni chunk ro'yxati bilan
   taqlid qiladi).
-- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 267 test, hammasi
+- Bajarish: `python -m unittest discover -s . -p "test_*.py"` — 279 test (keyin
+  qo'shilgan webhook testlari bilan; 2-bosqichda 267 edi), hammasi
   tarmoqsiz va soatsiz (`skipped=1` — symlink testi Windows'da admin so'raydi).
 - Bir martalik e2e tekshiruv (kommit qilinmaydi): haqiqiy `aiohttp` server + haqiqiy
   `agent.serve()` — pairing, `agent.json`ga `bind` yozilishi, `ls/cat/get/mkdir/cd`,

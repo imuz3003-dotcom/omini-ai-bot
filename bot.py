@@ -24,6 +24,7 @@ from aiohttp import web
 
 import botcore as core
 import devicehub
+import webhook
 
 bot = Bot(token=core.BOT_TOKEN)
 dp = Dispatcher()
@@ -2298,6 +2299,9 @@ async def on_error(event):
 
 
 BOOT_TIME = datetime.now(timezone.utc)
+WEBHOOK_SECRET = (os.getenv("WEBHOOK_SECRET") or "").strip()
+PUBLIC_URL = (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PUBLIC_URL")
+              or "https://omini-ai-bot.onrender.com").rstrip("/")
 USER_COMMANDS = [
     ("start", "Botni boshlash va menyuni ko'rsatish"),
     ("help", "Barcha imkoniyatlar va buyruqlar"),
@@ -2366,11 +2370,36 @@ async def start_web_server():
     app.router.add_get("/health", handle_health)
     app.router.add_get("/device/register", devicehub.handle_register)
     app.router.add_get("/device/ws", devicehub.handle_ws)
+    if WEBHOOK_SECRET:
+        receiver = webhook.Receiver(WEBHOOK_SECRET, feed_webhook_update)
+        app["webhook"] = receiver
+        app.router.add_post("/telegram/webhook", receiver.handle)
     port = int(os.environ.get("PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
     print(f">> Web server {port} da ishga tushdi (/health, /device/register, /device/ws mavjud).")
+
+
+async def feed_webhook_update(payload):
+    """Webhook'da kelgan update JSON'ini polling'dagiga bir xil yetkazadi."""
+    await dp.feed_update(bot, types.Update.model_validate(payload, context={"bot": bot}))
+
+
+async def start_updates(bot_obj=None, dispatcher=None, secret=None, base_url=None):
+    """`WEBHOOK_SECRET` bo'lsa webhook, bo'lmasa polling — ikkalasi birga emas."""
+    target_bot = bot_obj or bot
+    target_dp = dispatcher or dp
+    secret = WEBHOOK_SECRET if secret is None else secret
+    base = (PUBLIC_URL if base_url is None else base_url).rstrip("/")
+    if secret:
+        await target_bot.set_webhook(url=f"{base}/telegram/webhook", secret_token=secret,
+                                     drop_pending_updates=False)
+        print(f">> Webhook rejimi: {base}/telegram/webhook (polling yoqilmaydi).")
+    else:
+        await target_bot.delete_webhook()
+        print(">> Webhook kaliti yo'q — polling rejimida.")
+        await target_dp.start_polling(target_bot)
 
 
 async def main():
@@ -2381,7 +2410,7 @@ async def main():
         logging.warning("Menyu buyruqlari o'rnatilmadi: %s", error)
     print(">> omini AI bot ishga tushdi!")
     await start_web_server()
-    await dp.start_polling(bot)
+    await start_updates()
 
 
 if __name__ == "__main__":

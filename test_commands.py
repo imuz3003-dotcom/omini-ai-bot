@@ -884,5 +884,69 @@ class ClearChat(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(marker, self.session.deleted_msg_ids(), "yangi belgi ham o'chirib yuborildi")
 
 
+class Transport(unittest.IsolatedAsyncioTestCase):
+    """Kirish yo'lini bitta narsa hal qiladi: `WEBHOOK_SECRET` bor-yo'qligi.
+
+    Nima uchun alohida funksiya: webhook bilan polling bir vaqtda ishl olmaydi
+    (Telegram `getUpdates`ni 409 bilan rad etadi), shuning uchun «qaysi biri»
+    qarori testlanadigan bitta joyda turishi kerak.
+    """
+
+    class Bot:
+        def __init__(self):
+            self.calls = []
+
+        async def set_webhook(self, **kwargs):
+            self.calls.append(("set_webhook", kwargs))
+
+        async def delete_webhook(self, **kwargs):
+            self.calls.append(("delete_webhook", kwargs))
+
+    class Dp:
+        def __init__(self):
+            self.calls = []
+
+        async def start_polling(self, bot):
+            self.calls.append(("start_polling", bot))
+
+    async def test_secret_present_switches_to_webhook_and_never_polls(self):
+        bot, dp = self.Bot(), self.Dp()
+
+        await app.start_updates(bot_obj=bot, dispatcher=dp, secret="kalit",
+                                base_url="https://omini-ai-bot.onrender.com")
+
+        self.assertEqual([name for name, _ in bot.calls], ["set_webhook"])
+        sent = bot.calls[0][1]
+        self.assertEqual(sent["url"], "https://omini-ai-bot.onrender.com/telegram/webhook")
+        self.assertEqual(sent["secret_token"], "kalit")
+        self.assertIs(sent["drop_pending_updates"], False, "uyqudagi xabarlar o'chib ketmasligi kerak")
+        self.assertEqual(dp.calls, [], "webhook bilan polling birga ishlay olmaydi")
+
+    async def test_without_secret_polling_starts_and_webhook_is_cleared(self):
+        bot, dp = self.Bot(), self.Dp()
+
+        await app.start_updates(bot_obj=bot, dispatcher=dp, secret="",
+                                base_url="https://omini-ai-bot.onrender.com")
+
+        self.assertEqual([name for name, _ in bot.calls], ["delete_webhook"])
+        self.assertEqual([name for name, _ in dp.calls], ["start_polling"])
+
+    async def test_webhook_update_answers_exactly_like_polling(self):
+        """Kirish yo'li o'zgarsa ham handlerlar bir xil javob berishi shart."""
+        session = FakeSession()
+        app.bot.session = session
+        payload = update_of("/help", user_id=USER)
+
+        await app.feed_webhook_update(payload)
+        through_webhook = session.texts()
+        session.calls.clear()
+
+        await app.dp.feed_update(app.bot, types.Update.model_validate(dict(payload), context={"bot": app.bot}))
+        through_polling = session.texts()
+
+        self.assertTrue(through_webhook, "webhook orqali kelgan /help javobsiz qoldi")
+        self.assertEqual(through_webhook, through_polling)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

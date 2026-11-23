@@ -1,9 +1,11 @@
-# Render Blueprint — omini AI Telegram boti (24/7 long polling + keep-alive).
+# Render Blueprint — omini AI Telegram boti (webhook yoki long polling + keep-alive).
 # Render'da "New +" → "Blueprint" bilan shu repozitoriyani tanlasangiz, servis
-# avtomatik yaratiladi. BOT_TOKEN, GEMINI_API_KEY va DEVICE_SECRET sync: false —
-# ular faqat Render dashboard'dagi Environment Keys'ga kiritiladi (repositoriyada
-# saqlanmaydi). DEVICE_SECRET bo'sh qolsa bot ishlaydi, lekin har restart'da
-# qurilmalar (companion agentlari) qayta /pair yozishi kerak bo'ladi.
+# avtomatik yaratiladi. BOT_TOKEN, GEMINI_API_KEY, DEVICE_SECRET va WEBHOOK_SECRET
+# sync: false — ular faqat Render dashboard'dagi Environment Keys'ga kiritiladi
+# (repositoriyada saqlanmaydi). DEVICE_SECRET bo'sh qolsa bot ishlaydi, lekin har
+# restart'da qurilmalar (companion agentlari) qayta /pair yozishi kerak bo'ladi.
+# WEBHOOK_SECRET bo'sh qolsa bot eski polling rejimida ishlayveradi — bu webhook'dan
+# qaytishning yagona tugmasi (kod push qilish shart emas).
 #
 # Xotira (SQLite) DB_PATH = bot_data.db — servis papkasida (yozish mumkin bo'lgan
 # joy). DIQQAT: Free rejada Persistent Disk yo'q, shuning uchun deploy, restart va
@@ -30,6 +32,8 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: DEVICE_SECRET
+        sync: false
+      - key: WEBHOOK_SECRET
         sync: false
       - key: ADMIN_ID
         value: "8692018182"
