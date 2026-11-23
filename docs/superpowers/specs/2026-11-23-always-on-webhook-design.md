@@ -48,6 +48,12 @@ Xulosa: chegara 17 va 20 daqiqa oralig'ida; deploy/restart SQLite'ni tozaydi.
   **boshlanmaydi**; bo'lmasa `delete_webhook()` + polling. Har boot'da
   `set_webhook` qayta chaqiriladi, shuning uchun Telegram uni o'chirib
   qo'ysa ham keyingi restart tiklaydi.
+- **Webhook rejimida protsessni kimdir tirik ushlab turishi shart.** Birinchi
+  jonli deploy (`9c7c5cd`) bu tufayli o'ldi: `start_polling` chaqirilmagani
+  uchun `main()` tugadi, protsess chiqib ketdi, Render `Application exited
+  early` + `No open ports detected` bilan uni qayta-qayta ko'tardi (bot ~13
+  daqiqa hech kimga javob bermadi). Endi webhook shoxida `asyncio.Event().wait()`
+  turadi (`47616bd`).
 - **Orqaga qaytish:** dashboard'dan `WEBHOOK_SECRET`'ni o'chirish — kod
   push qilmasdan polling rejimiga qaytadi.
 
