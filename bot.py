@@ -2396,6 +2396,9 @@ async def start_updates(bot_obj=None, dispatcher=None, secret=None, base_url=Non
         await target_bot.set_webhook(url=f"{base}/telegram/webhook", secret_token=secret,
                                      drop_pending_updates=False)
         print(f">> Webhook rejimi: {base}/telegram/webhook (polling yoqilmaydi).")
+        # `start_polling`ning o'rnini bosadigan to'sin: bu bo'lmasa `main()` tugab,
+        # protsess chiqib ketadi va Render «Application exited early» beradi.
+        await asyncio.Event().wait()
     else:
         await target_bot.delete_webhook()
         print(">> Webhook kaliti yo'q — polling rejimida.")

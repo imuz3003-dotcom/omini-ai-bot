@@ -909,11 +909,21 @@ class Transport(unittest.IsolatedAsyncioTestCase):
         async def start_polling(self, bot):
             self.calls.append(("start_polling", bot))
 
+    async def stop(self, task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     async def test_secret_present_switches_to_webhook_and_never_polls(self):
         bot, dp = self.Bot(), self.Dp()
 
-        await app.start_updates(bot_obj=bot, dispatcher=dp, secret="kalit",
-                                base_url="https://omini-ai-bot.onrender.com")
+        task = asyncio.create_task(app.start_updates(
+            bot_obj=bot, dispatcher=dp, secret="kalit",
+            base_url="https://omini-ai-bot.onrender.com"))
+        await asyncio.sleep(0.05)
+        await self.stop(task)
 
         self.assertEqual([name for name, _ in bot.calls], ["set_webhook"])
         sent = bot.calls[0][1]
@@ -930,6 +940,20 @@ class Transport(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([name for name, _ in bot.calls], ["delete_webhook"])
         self.assertEqual([name for name, _ in dp.calls], ["start_polling"])
+
+    async def test_webhook_mode_keeps_the_process_alive(self):
+        """Webhook'da `start_polling` chaqirilmaydi — uni o'rnini bosadigan
+        to'sin bo'lmasa protsess chiqib ketadi va Render «Application exited
+        early» bilan uni qayta-qayta o'ldiradi (2026-11-23'dagi jonli deploy)."""
+        bot, dp = self.Bot(), self.Dp()
+
+        task = asyncio.create_task(app.start_updates(
+            bot_obj=bot, dispatcher=dp, secret="kalit",
+            base_url="https://omini-ai-bot.onrender.com"))
+        await asyncio.sleep(0.05)
+
+        self.assertFalse(task.done(), "webhook rejimida protsess chiqib ketmoqda")
+        await self.stop(task)
 
     async def test_webhook_update_answers_exactly_like_polling(self):
         """Kirish yo'li o'zgarsa ham handlerlar bir xil javob berishi shart."""
