@@ -1,0 +1,23 @@
+name: keepalive
+
+# Render Free instansiya ~20 daqiqa kiruvchi so'rovsiz o'ldiriladi;
+# bu ish oqimi uni tirik ushlab turadigan yagona manba.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: /health
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /tmp/health -w "%{http_code}" -m 60 https://omini-ai-bot.onrender.com/health)
+            echo "urinish $i -> HTTP $code $(cat /tmp/health)"
+            [ "$code" = "200" ] && exit 0
+            sleep 20
+          done
+          exit 1
