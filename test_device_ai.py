@@ -330,15 +330,15 @@ class StreamToolLoop(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pieces, ["o'chirib bo'lmadi"])
 
     async def test_rounds_are_capped(self):
-        # Model cheksiz qadam qilmoqchi bo'lsa: 4 marta bajariladi, 5-chaqiruv
+        # Model cheksiz qadam qilmoqchi bo'lsa: 8 marta bajariladi, 9-chaqiruv
         # javobsiz qolmaydi (tariz buzilmasin) va limit ko'rsatiladi.
-        streams = [[call_chunk(f"c{i}", "ls", {})] for i in range(10)]
+        streams = [[call_chunk(f"c{i}", "ls", {})] for i in range(12)]
         chat = FakeChat(streams)
         recorder = Recorder(result={})
         with self.assertRaises(core.ToolLoopLimit):
             await self.collect(chat, "ko'rib chiqaylik", recorder)
-        self.assertEqual(len(recorder.calls), 4)
-        self.assertEqual(len(chat.sent), 5)
+        self.assertEqual(len(recorder.calls), 8)
+        self.assertEqual(len(chat.sent), 9)
 
     async def test_dispatch_is_optional(self):
         chat = FakeChat([[text_chunk("oddiy javob")]])
@@ -386,12 +386,12 @@ class SendTextFallback(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.sent[1][0].function_response.response, {"path": "a.txt"})
 
     async def test_fallback_shares_the_round_cap(self):
-        chat = FakeSyncChat([call_chunk(f"c{i}", "ls", {}) for i in range(10)])
+        chat = FakeSyncChat([call_chunk(f"c{i}", "ls", {}) for i in range(12)])
         recorder = Recorder(result={})
         with self.assertRaises(core.ToolLoopLimit):
             await core.send_text(chat, "davom et", recorder)
-        self.assertEqual(len(recorder.calls), 4)
-        self.assertEqual(len(chat.sent), 5)
+        self.assertEqual(len(recorder.calls), 8)
+        self.assertEqual(len(chat.sent), 9)
 
 
 if __name__ == "__main__":

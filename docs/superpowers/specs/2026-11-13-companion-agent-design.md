@@ -233,8 +233,8 @@ Qoidalar:
   bitta fayl, ildiz ichida, deny ro'yxati.
 - Javoblanmagan `function_call` Gemini tarixini buzadi, shuning uchun har bir
   chaqiruv javoblanadi: xato bo'lsa `{"error": …}`. Qadamlar chegarasi
-  `MAX_TOOL_ROUNDS = 4`; undan oshsa `ToolLoopLimit` ko'tariladi (sessiya keyingi
-  xabarda qayta yaratiladi).
+  `MAX_TOOL_ROUNDS = 8`; undan oshsa `ToolLoopLimit` ko'tariladi — shu so'rovda
+  oxirgi chaqiruv javobsiz qoladi, tarixni tiklash uchun `/new` kerak.
 - Guruh chatida `tool_dispatch` chaqiruvni bajarmaydi, rad javobini qaytaradi —
   xabar shaxsiy chatda yozilsin.
 - Model vosita deklaratsiyasini ko'tara olmasa, `create_chat` deklaratsiyasiz

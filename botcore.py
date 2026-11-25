@@ -897,7 +897,7 @@ def ask_once(model: str, contents, use_search: bool, system_instruction: str = B
     raise last_error
 
 
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_ROUNDS = 8
 # Bitta vosita javobi uchun chegara: agentdagi sekin amallar 60 s, ustiga tarmoq.
 TOOL_ANSWER_TIMEOUT = 75.0
 

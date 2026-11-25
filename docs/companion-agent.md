@@ -168,7 +168,7 @@ chaqiradi. Xavfli bo'lmaganlar tasdiq so'ramaydi. Chegaralar:
   AI tomonidan so'ralsa ham agent rad etadi.
 - Guruh chat'ida AI qurilmaga tegmaydi (faqat shaxsiy suhbat).
 - Agent onlayn bo'lmasa bot qisqacha `📴` bilan javob beradi, javobni uydurmaydi.
-- AI 4 qadamdan ortiq amal so'rasa to'xtaydi — cheksiz sikl bo'lmaydi.
+- AI 8 qadamdan ortiq amal so'rasa to'xtaydi — cheksiz sikl bo'lmaydi.
 
 ## 5. Xatolar nimani anglatadi
 
