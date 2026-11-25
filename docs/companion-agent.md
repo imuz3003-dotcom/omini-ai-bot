@@ -96,6 +96,26 @@ imzosi bilan jimgina qayta qabul qilinadi. Konsol derazasi yopilsa agent to'xtay
   `python companion\agent.py --pair --url … --root …`. Eski qurilma bot ro'yxatida
   qoladi — `/unpair <nom>` bilan o'chirib tashlang.
 
+## 1c. Windows — kompyuter yoqilganda o'zi boshlansin
+
+Agent ishlamasa AI qurilma vositalarini umuman ko'rmaydi va "men fayllar bilan
+ishlay olmayman" deb javob beradi (bu kod xatosi emas). Shuning uchun `.exe`ni
+Startup'ga qisqa yo'lama bilan qo'ying — admin huquqi talab qilinmaydi:
+
+```powershell
+$ws = New-Object -ComObject WScript.Shell
+$lnk = $ws.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'omini-agent.lnk'))
+$lnk.TargetPath = 'C:\Users\User\Desktop\omini-agent.exe'
+$lnk.WorkingDirectory = 'C:\Users\User\Desktop'
+$lnk.WindowStyle = 7   # konsol derazasi minimizatsiyada ochilsin
+$lnk.Save()
+```
+
+- Faqat **shu foydalanuvchi sessiyasi** boshlanganda ishlaydi (qulflangan ekranda
+  emas), ya'ni hisobga kirgach agent avtomatik ulanadi.
+- O'chirish: `Win+R` → `shell:startup` → `omini-agent.lnk` ni o'chirish.
+- `.exe` boshqa papkaga ko'chsa qisqa yo'lanani yangilang (`TargetPath`).
+
 ## 2. Android (Termux)
 
 Quyidagi qadamlar Termux'da sinab ko'rilmagan — birinchi telefon ulanishida
