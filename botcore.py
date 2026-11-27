@@ -1005,10 +1005,22 @@ def ask_once(model: str, contents, use_search: bool, system_instruction: str = B
 MAX_TOOL_ROUNDS = 8
 # Bitta vosita javobi uchun chegara: agentdagi sekin amallar 60 s, ustiga tarmoq.
 TOOL_ANSWER_TIMEOUT = 75.0
+# Chegaradan keyingi davolar: chaqiruvlar bajarilmaydi, stub bilan yopiladi va
+# modeldan xulosa so'raladi. Shunda javobsiz function_call tarixni buzmaydi va
+# foydalanuvchi xato o'rniga qilishganlar ro'yxatini oladi.
+WIND_DOWN_ROUNDS = 2
+STOP_NOTE = ("\n\n⏹️ {0} qadam bajarildi. «davom et» deb yozing — qolganini "
+             "davom ettiraman.").format(MAX_TOOL_ROUNDS)
 
 
 class ToolLoopLimit(Exception):
     """Model qadam-qadam javob yuborishda davom etdi — suhbatni to'xtatamiz."""
+
+
+def _limit_answers(calls) -> list:
+    note = (f"Qadamlar chegarasiga ({MAX_TOOL_ROUNDS}) yetildi, buyruq bajarilmadi. "
+            "Endi boshqa vosita so'ramang — bajarilgan ishlarning qisqa xulosasini yozing.")
+    return [_response_part(call, {"error": note}) for call in calls]
 
 
 def _answer_call(call, dispatch, loop) -> dict:
@@ -1043,7 +1055,8 @@ async def stream_text(chat, prompt, dispatch=None):
     def worker():
         try:
             message = prompt
-            for turn in range(MAX_TOOL_ROUNDS + 1):
+            stopped = False
+            for turn in range(MAX_TOOL_ROUNDS + WIND_DOWN_ROUNDS + 1):
                 calls = []
                 for chunk in chat.send_message_stream(message):
                     piece = getattr(chunk, "text", None)
@@ -1052,11 +1065,20 @@ async def stream_text(chat, prompt, dispatch=None):
                     calls.extend(getattr(chunk, "function_calls", None) or [])
                 if not calls:
                     break
-                if dispatch is None or turn == MAX_TOOL_ROUNDS:
+                if dispatch is None:
                     raise ToolLoopLimit(
                         f"{MAX_TOOL_ROUNDS} qadamdan ortiqcha amal so'raldi")
+                if turn >= MAX_TOOL_ROUNDS:
+                    if turn >= MAX_TOOL_ROUNDS + WIND_DOWN_ROUNDS:
+                        raise ToolLoopLimit(
+                            f"{MAX_TOOL_ROUNDS} qadamdan ortiqcha amal so'raldi")
+                    stopped = True
+                    message = _limit_answers(calls)
+                    continue
                 message = [_response_part(call, _answer_call(call, dispatch, loop))
                            for call in calls]
+            if stopped:
+                emit(STOP_NOTE)
         except BaseException as error:
             emit(error)
         emit(None)
@@ -1086,14 +1108,21 @@ async def send_text(chat, prompt, dispatch=None) -> tuple:
     """
     message = prompt
     text = ""
-    for turn in range(MAX_TOOL_ROUNDS + 1):
+    stopped = False
+    for turn in range(MAX_TOOL_ROUNDS + WIND_DOWN_ROUNDS + 1):
         response = await asyncio.to_thread(chat.send_message, message)
         text += (getattr(response, "text", None) or "")
         calls = getattr(response, "function_calls", None) or []
         if not calls:
-            return text, response
-        if dispatch is None or turn == MAX_TOOL_ROUNDS:
+            return text + (STOP_NOTE if stopped else ""), response
+        if dispatch is None:
             raise ToolLoopLimit(f"{MAX_TOOL_ROUNDS} qadamdan ortiqcha amal so'raldi")
+        if turn >= MAX_TOOL_ROUNDS:
+            if turn >= MAX_TOOL_ROUNDS + WIND_DOWN_ROUNDS:
+                raise ToolLoopLimit(f"{MAX_TOOL_ROUNDS} qadamdan ortiqcha amal so'raldi")
+            stopped = True
+            message = _limit_answers(calls)
+            continue
         answers = []
         for call in calls:
             try:

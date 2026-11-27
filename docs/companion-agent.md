@@ -168,7 +168,9 @@ chaqiradi. Xavfli bo'lmaganlar tasdiq so'ramaydi. Chegaralar:
   AI tomonidan so'ralsa ham agent rad etadi.
 - Guruh chat'ida AI qurilmaga tegmaydi (faqat shaxsiy suhbat).
 - Agent onlayn bo'lmasa bot qisqacha `📴` bilan javob beradi, javobni uydurmaydi.
-- AI 8 qadamdan ortiq amal so'rasa to'xtaydi — cheksiz sikl bo'lmaydi.
+- AI 8 qadamdan ko'p amal so'rasa, qolgan chaqiruvlar **bajarilmaydi** (ularga
+  «chegara» javobi yoziladi) va modeldan xulosa so'raladi: foydalanuvchi `⏹️ …
+  «davom et» deb yozing` xabarini oladi, javobsiz `function_call` tarixni buzmaydi.
 
 ## 5. Xatolar nimani anglatadi
 
@@ -179,6 +181,7 @@ chaqiradi. Xavfli bo'lmaganlar tasdiq so'ramaydi. Chegaralar:
 | Konsolda hech narsa chiqmaydi, lekin `/ls` `📴 onlayn emas` deb javob beradi | Render proksi rad etish kodini (~21 s kechikib) yetkazmaydi — agent jimgina qayta-qayta ulanib uziladi | 3 qisqa ulanishdan keyin agent imzosini o'zi tashlab, `>> Telegram'da /pair …` kodini ko'rsatadi; shuni yozing |
 | `📴 "…" hozir onlayn emas` | agent o'chgan yoki interneti yo'q | agentni ishga tushiring |
 | `⏱ "…" 10 soniyada javob bermadi` | juda katta katalog yoki sekin tarmoq | `/cd` bilan torroq joyga kiring (`/cp`, `/get` kabi sekin amallar uchun chegara 60 s) |
+| `⏹️ 8 qadam bajarildi. «davom et» deb yozing` | so'rov juda ko'p qadamli ish (masalan butun o'yin loyihasi) | `davom et` deb yozing — qolgan qismini yozadi |
 | `Kod noto'g'ri yoki muddati o'tgan` | 10 daqiqa o'tdi / xato raqam | agent kodni qayta ko'rsatadi; 5 marta xato qilsangiz 10 daqiqa kuting |
 | `⛔ ruxsat yo'q: … ildizdan tashqarida` | `ROOT` tashqarisiga chiqdingiz | `/cd` bilan ildiz ichida qoling yoki `--root` ni kengaytiring |
 | `Python topilmadi` (`.bat` derazasida) | PATH'da yo'q | Python'ni qayta o'rnatib, "Add python.exe to PATH" belgisini qo'ying |

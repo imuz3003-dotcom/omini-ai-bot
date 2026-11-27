@@ -280,6 +280,10 @@ async def ask_ai(message, prompt: str, user_id: int, markup=None):
             try:
                 answer, sent = await stream_reply(message, session, prompt, user_id, markup,
                                                   dispatch)
+            except core.ToolLoopLimit as error:
+                logging.warning("Qurilma qadamlari chegarasiga urildi: %s", error)
+                answer = core.STOP_NOTE.strip()
+                sent = await send_long(message, answer, user_id, markup=markup)
             except Exception as error:
                 logging.warning("Oqimli javob yutildi, bitta xabarga qaytamiz: %s", error)
         if answer is None:

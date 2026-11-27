@@ -329,16 +329,28 @@ class StreamToolLoop(unittest.IsolatedAsyncioTestCase):
         self.assertIn("boom", str(response.response["error"]))
         self.assertEqual(pieces, ["o'chirib bo'lmadi"])
 
-    async def test_rounds_are_capped(self):
-        # Model cheksiz qadam qilmoqchi bo'lsa: 8 marta bajariladi, 9-chaqiruv
-        # javobsiz qolmaydi (tariz buzilmasin) va limit ko'rsatiladi.
-        streams = [[call_chunk(f"c{i}", "ls", {})] for i in range(12)]
+    async def test_limit_winds_down_into_a_summary(self):
+        """8 amaldan keyin: chaqiruvlar bajarilmaydi, stub bilan yopiladi va
+        modeldan xulosa so'raladi — foydalanuvchi xato emas, matn oladi."""
+        streams = [[call_chunk(f"c{i}", "ls", {})] for i in range(9)] + [[text_chunk("mana xulosa")]]
+        chat = FakeChat(streams)
+        recorder = Recorder(result={})
+        pieces = await self.collect(chat, "loyihani ko'rib chiq", recorder)
+        joined = "".join(pieces)
+        self.assertEqual(len(recorder.calls), 8, "chegaradan keyin birorta amal bajarilmasligi kerak")
+        self.assertIn("mana xulosa", joined)
+        self.assertIn("⏹️", joined, "foydalanuvchi to'xtatilganini bilishi kerak")
+        stub = chat.sent[9][0].function_response.response
+        self.assertIn("chegarasi", str(stub))
+
+    async def test_model_that_ignores_the_limit_still_reports_it(self):
+        streams = [[call_chunk(f"c{i}", "ls", {})] for i in range(14)]
         chat = FakeChat(streams)
         recorder = Recorder(result={})
         with self.assertRaises(core.ToolLoopLimit):
             await self.collect(chat, "ko'rib chiqaylik", recorder)
         self.assertEqual(len(recorder.calls), 8)
-        self.assertEqual(len(chat.sent), 9)
+        self.assertEqual(len(chat.sent), 11, "8 amal + 2 stub davosi + birinchi xabar")
 
     async def test_dispatch_is_optional(self):
         chat = FakeChat([[text_chunk("oddiy javob")]])
@@ -385,13 +397,71 @@ class SendTextFallback(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, "yozildi")
         self.assertEqual(chat.sent[1][0].function_response.response, {"path": "a.txt"})
 
+    async def test_fallback_winds_down_instead_of_failing(self):
+        responses = [call_chunk(f"c{i}", "ls", {}) for i in range(9)] + [text_chunk("mana xulosa")]
+        chat = FakeSyncChat(responses)
+        recorder = Recorder(result={})
+        text, _ = await core.send_text(chat, "davom et", recorder)
+        self.assertEqual(len(recorder.calls), 8)
+        self.assertIn("mana xulosa", text)
+        self.assertIn("⏹️", text)
+        self.assertIn("chegarasi", str(chat.sent[9][0].function_response.response))
+
     async def test_fallback_shares_the_round_cap(self):
-        chat = FakeSyncChat([call_chunk(f"c{i}", "ls", {}) for i in range(12)])
+        chat = FakeSyncChat([call_chunk(f"c{i}", "ls", {}) for i in range(14)])
         recorder = Recorder(result={})
         with self.assertRaises(core.ToolLoopLimit):
             await core.send_text(chat, "davom et", recorder)
         self.assertEqual(len(recorder.calls), 8)
-        self.assertEqual(len(chat.sent), 9)
+        self.assertEqual(len(chat.sent), 11)
+
+
+class DeviceChat:
+    id = 5
+    type = "private"
+
+
+class DeviceMessage:
+    chat = DeviceChat()
+    message_id = 1
+
+
+class ToolLimitFallback(unittest.IsolatedAsyncioTestCase):
+    """Chegarada zaxira yo'l qayta ishga tushmasligi kerak: aks holda 8 qadam
+    kompyuterda ikki marta bajariladi (fayllar, o'chirishlar takrorlanadi)."""
+
+    async def test_stream_limit_is_not_retried_through_send_text(self):
+        import contextlib
+
+        session = {"chat": "chat:X", "search": False}
+        delivered = []
+
+        async def fake_stream_reply(*args, **kwargs):
+            raise core.ToolLoopLimit("8 qadamdan ortiqcha amal so'raldi")
+
+        @contextlib.asynccontextmanager
+        async def fake_keep_typing(chat_id, action=None):
+            yield
+
+        async def fake_send_long(message, text, user_id, markup=None, sources=None):
+            delivered.append(text)
+            return "sent"
+
+        async def fail_send_text(*args, **kwargs):
+            raise AssertionError("zaxira yo'l amallarni qayta bajarishi mumkin emas")
+
+        with patch.object(app, "keep_typing", fake_keep_typing), \
+                patch.object(app, "ensure_session", lambda user_id: session), \
+                patch.object(app, "tool_dispatch", lambda user_id, private: None), \
+                patch.object(app, "stream_reply", fake_stream_reply), \
+                patch.object(app, "send_long", fake_send_long), \
+                patch.object(app.core, "send_text", fail_send_text), \
+                patch.object(app.core.store, "add_message"), \
+                patch.object(app.core.store, "bump"):
+            await app.ask_ai(DeviceMessage(), "davom et", 1)
+
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("⏹️", delivered[0], "foydalanuvchi chegarani davom ettirish yo'lini ko'rsin")
 
 
 if __name__ == "__main__":
