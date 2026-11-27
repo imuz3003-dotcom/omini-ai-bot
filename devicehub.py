@@ -32,6 +32,9 @@ COMMAND_TIMEOUT = 10.0        # tez amallar
 SLOW_TIMEOUT = 60.0           # fayl ko'chirish/yuborish
 SLOW_OPS = frozenset({"cp", "mv", "get", "put", "write"})
 MAX_NAME_LENGTH = 40
+# `/device` ro'yxatida ko'rinadigan qisqa ID: `--pair`dan qolgan bir xil nomli
+# qatorlarni shu ajratadi (`/unpair a3f9c1`).
+SHORT_ID = 6
 # `/put` oldindan tekshiriladi: agent kanali bitta kadrga sig'magan faylni butunlay
 # yo'qotadi. ops.MAX_GET_BYTES (8 MB) bilan bir xil — ikkala yo'nalish simmetrik.
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
@@ -328,12 +331,17 @@ class DeviceHub:
         owner = int(user_id)
         owned = [d for d in self._devices.values() if d.owner_user_id == owner]
         needle = str(ref).strip().lower()
-        match = next((d for d in owned if d.name.lower() == needle
-                      or d.agent_id == needle or d.agent_id.startswith(needle)), None)
-        if match is None:
+        matches = [d for d in owned if d.name.lower() == needle
+                   or d.agent_id == needle or d.agent_id.startswith(needle)]
+        if not matches:
             names = ", ".join(f"\"{d.name}\"" for d in owned) if owned else "yo'q"
             raise DeviceError(f"Bunday qurilma topilmadi. Sizdagi qurilmalar: {names}.")
-        return match
+        if len(matches) > 1:
+            ids = ", ".join(d.agent_id[:SHORT_ID] for d in matches)
+            raise DeviceError(f"\"{matches[0].name}\" nomida {len(matches)} qurilma bor — "
+                              f"qaysi biri kerak?\nNom o'rniga ID bilan yozing: {ids}. "
+                              "Ro'yxat: /device")
+        return matches[0]
 
     def select(self, user_id, ref) -> dict:
         device = self._match(user_id, ref)

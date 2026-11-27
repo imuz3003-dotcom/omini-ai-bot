@@ -441,6 +441,46 @@ class Selection(unittest.IsolatedAsyncioTestCase):
             self.instance.select(777, "desk-pc")
 
 
+class AmbiguousNames(unittest.IsolatedAsyncioTestCase):
+    """`--pair` qayta ishga tushganda eski yozuv ro'yxatda qoladi — ikki qator bir xil nomli.
+
+    Nima uchun kerak: nom bo'yicha birinchi mos yozuvni olib tashlash tirik
+    qurilmani ham o'ldirishi mumkin edi, tashqaridan esa ularni ajratib
+    bo'lmaydi. Shuning uchun noaniq nom endi rad etiladi.
+    """
+
+    OLD = "a" * 32
+    NEW = "b" * 32
+
+    async def asyncSetUp(self):
+        self.instance = hub()
+        for agent in (self.OLD, self.NEW):
+            self.instance.pair(42, self.instance.register(agent, "desk-pc", "C:/Users/me"))
+        self.socket = FakeSocket()
+        await self.instance.attach(self.NEW, self.socket,
+                                   bind=bind_of(agent_id=self.NEW), owner_user_id=42)
+
+    async def test_ambiguous_name_cannot_be_unpaired(self):
+        with self.assertRaises(devicehub.DeviceError) as caught:
+            self.instance.unpair(42, "desk-pc")
+        self.assertIn("ID bilan", str(caught.exception))
+        self.assertEqual(len(self.instance.devices_of(42)), 2, "hech qaysi qurilma o'chmasligi kerak")
+        self.assertIsNone(self.socket.closed)
+
+    async def test_ambiguous_name_cannot_be_selected(self):
+        with self.assertRaises(devicehub.DeviceError):
+            self.instance.select(42, "desk-pc")
+
+    async def test_short_id_unpairs_exactly_that_device(self):
+        self.instance.unpair(42, self.OLD[:6])
+        self.assertEqual([d["agent_id"] for d in self.instance.devices_of(42)], [self.NEW])
+        self.assertIsNone(self.socket.closed)
+
+    async def test_short_id_selects_exactly_that_device(self):
+        self.instance.select(42, self.OLD[:6])
+        self.assertEqual(self.instance.pick(42).agent_id, self.OLD)
+
+
 class Revocation(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.instance = hub()

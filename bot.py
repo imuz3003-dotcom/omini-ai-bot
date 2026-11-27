@@ -1399,10 +1399,13 @@ async def cmd_device(message: types.Message, command: CommandObject):
     for item in devices:
         mark = "🎯 " if item["active"] else "   "
         state = "🟢 onlayn" if item["online"] else "⚪ oflayn"
-        lines.append(f"{mark}<b>{core.escape_html(item['name'])}</b> — {state}\n"
+        short = item["agent_id"][:devicehub.SHORT_ID]
+        lines.append(f"{mark}<b>{core.escape_html(item['name'])}</b> — {state} "
+                     f"<code>{core.escape_html(short)}</code>\n"
                      f"      <code>{core.escape_html(item['cwd'])}</code>")
     await notify(message, "📱 Qurilmalaringiz:\n" + "\n".join(lines)
-                 + "\n\nAlmashtirish: <code>/device nom</code> · Olib tashlash: <code>/unpair nom</code>")
+                 + "\n\nAlmashtirish: <code>/device nom</code> · Olib tashlash: <code>/unpair nom</code>"
+                 + " (nom takrorlansa <code>/unpair id</code>)")
 
 
 @dp.message(Command("unpair"))
@@ -1411,7 +1414,8 @@ async def cmd_unpair(message: types.Message, command: CommandObject):
         return
     ref = (command.args or "").strip()
     if not ref:
-        await notify(message, "Namuna: <code>/unpair desk-pc</code> (ro'yxat: <code>/device</code>)")
+        await notify(message, "Namuna: <code>/unpair desk-pc</code> yoki <code>/unpair a3f9c1</code> "
+                              "(ro'yxat: <code>/device</code>)")
         return
     try:
         record = HUB.unpair(message.from_user.id, ref)

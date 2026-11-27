@@ -94,7 +94,9 @@ imzosi bilan jimgina qayta qabul qilinadi. Konsol derazasi yopilsa agent to'xtay
 - Config: `%APPDATA%\omini-agent\agent.json`
 - Butun sozlamani yangilash (yangi `agent_id` va yangi kod):
   `python companion\agent.py --pair --url … --root …`. Eski qurilma bot ro'yxatida
-  qoladi — `/unpair <nom>` bilan o'chirib tashlang.
+  qoladi va nomi yangisi bilan bir xil bo'ladi — `/device` ro'yxatidagi qisqa ID
+  (`/unpair a3f9c1`) bilan o'chirib tashlang. Nomi takrorlangan qurilmaga oddiy
+  `/unpair <nom>` buyruq bermaydi: bot xato qaysi biri ekanligini biladi.
 
 ## 1c. Windows — kompyuter yoqilganda o'zi boshlansin
 
@@ -184,6 +186,7 @@ chaqiradi. Xavfli bo'lmaganlar tasdiq so'ramaydi. Chegaralar:
 | `⏹️ 8 qadam bajarildi. «davom et» deb yozing` | so'rov juda ko'p qadamli ish (masalan butun o'yin loyihasi) | `davom et` deb yozing — qolgan qismini yozadi |
 | `Kod noto'g'ri yoki muddati o'tgan` | 10 daqiqa o'tdi / xato raqam | agent kodni qayta ko'rsatadi; 5 marta xato qilsangiz 10 daqiqa kuting |
 | `⛔ ruxsat yo'q: … ildizdan tashqarida` | `ROOT` tashqarisiga chiqdingiz | `/cd` bilan ildiz ichida qoling yoki `--root` ni kengaytiring |
+| `«nom» nomida 2 qurilma bor` | agent `--pair` bilan qayta ishga tushganda eski yozuv qoladi | `/device` dagi qisqa ID bilan yozing: `/unpair a3f9c1` (eski, ⚪ oflayn qatorni o'chiradi) |
 | `Python topilmadi` (`.bat` derazasida) | PATH'da yo'q | Python'ni qayta o'rnatib, "Add python.exe to PATH" belgisini qo'ying |
 
 ## 6. Nima ataylab qilinmaydi

@@ -660,6 +660,7 @@ class FakeHub:
         self.results = {}
         self.error = None
         self.offline = False
+        self.devices = []
 
     def _fail(self):
         if self.error:
@@ -677,7 +678,7 @@ class FakeHub:
         return self.results.get(op, {})
 
     def devices_of(self, user_id):
-        return []
+        return self.devices
 
     def cwd_of(self, user_id):
         self._fail()
@@ -772,6 +773,18 @@ class DeviceCommands(unittest.IsolatedAsyncioTestCase):
         await self.typed("/rm C:/Windows/x.txt")
         self.assertIn("ildizdan tashqarida", self.replies())
         self.assertNotIn("Bunday buyruq yo'q", self.replies())
+
+    async def test_device_list_shows_the_id_that_tells_duplicates_apart(self):
+        self.hub.devices = [
+            {"name": "desk-pc", "cwd": "C:/Users/me", "online": False, "active": False,
+             "agent_id": "a" * 32},
+            {"name": "desk-pc", "cwd": "C:/Users/me", "online": True, "active": True,
+             "agent_id": "b" * 32},
+        ]
+        await self.typed("/device")
+        text = self.replies()
+        self.assertIn("aaaaaa", text)
+        self.assertIn("bbbbbb", text)
 
     async def test_group_chat_never_reaches_a_device(self):
         await self.typed("/ls", chat_id=-100123, chat_type="group")
