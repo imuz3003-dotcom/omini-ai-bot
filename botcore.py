@@ -59,17 +59,18 @@ if not BOT_TOKEN or not GEMINI_API_KEY:
 
 
 def parse_keys(raw: str) -> list:
-    """GEMINI_API_KEY'ni vergul bilan bo'lib kalitlar ro'yxatini qaytaradi.
+    """GEMINI_API_KEY'ni vergul yoki bo'shliq bilan bo'lib kalitlar ro'yxatini qaytaradi.
 
     Bitta kalit yozilgan eski holat ham shu funksiadan o'tadi — ro'yxat uzunligi
-    1 bo'ladi va xulq avvalgidek qoladi.
+    1 bo'ladi va xulq avvalgidek qoladi. Dashboard'ga yangi qator bilan tashlangan
+    ro'yxat ham shu yerda to'g'rilanadi.
     """
-    return [key.strip() for key in (raw or "").split(",") if key.strip()]
+    return [key for key in re.split(r"[,\s]+", (raw or "").strip()) if key]
 
 
 # Kvotaga urilgan kalit qancha vaqtga chetga chiqadi (sekund).
 KEY_COOLDOWN = float(os.getenv("KEY_COOLDOWN", "60"))
-# Kalitning o'zi yaroqsiz bo'lsa (401/403) — uni keraksiz sinab turmaslik uchun uzoqroq.
+# Kalitning o'zi yaroqsiz bo'lsa (401/403 yoki 'API key not valid') — uzoqroq chetlaymiz.
 KEY_PENALTY = float(os.getenv("KEY_PENALTY", "600"))
 
 
@@ -101,21 +102,23 @@ pool = KeyPool([genai.Client(api_key=key) for key in API_KEYS])
 
 def is_rate_limited(error) -> bool:
     """429/503 (kvota yoki vaqtincha to'yinganlik) — boshqa kalitda sinash kerak."""
-    code = getattr(error, "code", None)
-    if isinstance(code, int):
-        return code in (429, 503)
     text = str(error).lower()
-    return any(mark in text for mark in ("429", "503", "resource_exhausted", "rate limit"))
+    if any(mark in text for mark in ("429", "503", "resource_exhausted", "rate limit")):
+        return True
+    code = getattr(error, "code", None)
+    return isinstance(code, int) and code in (429, 503)
 
 
 def is_broken_key(error) -> bool:
-    """401/403 — kalitning o'zi yaroqsiz (o'chirilgan yoki cheklangan)."""
+    """Kalitning o'zi yaroqsiz: 401/403 — Google buni ba'zan 400 'API key not valid' deb ham yuboradi."""
+    text = str(error).lower()
+    if any(mark in text for mark in ("api key not valid", "api_key_invalid", "unauthenticated",
+                                     "permission denied")):
+        return True
     code = getattr(error, "code", None)
     if isinstance(code, int):
         return code in (401, 403)
-    text = str(error).lower()
-    return any(mark in text for mark in ("401", "403", "api key not valid", "unauthenticated",
-                                         "permission denied"))
+    return any(mark in text for mark in ("401", "403"))
 
 
 def should_switch_key(error) -> bool:
@@ -134,7 +137,7 @@ def user_key_index(user_id: int):
 def cool_user_key(user_id: int, error=None) -> None:
     """Foydalanuvchi sessiyasining kalitini chetlatadi; sessiya bo'lmasa — hech narsa.
 
-    Xato kalitning o'zi yaroqsizligini ko'rsatsa (401/403), uzoqroq chetlaymiz.
+    Xato kalitning o'zi yaroqsizligini ko'rsatsa, uzoqroq chetlaymiz.
     """
     index = _user_key.get(user_id)
     if index is None:
@@ -988,7 +991,8 @@ def ask_once(model: str, contents, use_search: bool, system_instruction: str = B
                     continue
                 if is_broken_key(error):
                     pool.cool(index, KEY_PENALTY)
-                    logging.warning("Kalit #%d yaroqsiz (401/403), %d s ga chetlatildi", index, int(KEY_PENALTY))
+                    logging.warning("Kalit #%d yaroqsiz (%d s ga chetlatildi): %s",
+                                    index, int(KEY_PENALTY), str(error)[:160])
                     continue
                 if not want_search:
                     raise
@@ -1291,7 +1295,7 @@ def generate_image_gemini(prompt: str, aspect: str = None, refs: list = None):
     if quota_hit:
         raise ImageQuotaError(f"{models[0]}: kvota tugagan (billing ulanganda ishlaydi)")
     if broken_hit:
-        raise ImageQuotaError("Hech bir Gemini kaliti rasm uchun yaroqli emas (401/403)")
+        raise ImageQuotaError("Hech bir Gemini kaliti rasm uchun yaroqli emas")
     raise ImageQuotaError(f"{models[0]} rasm uchun mavjud emas: {str(last_error)[:120]}")
 
 

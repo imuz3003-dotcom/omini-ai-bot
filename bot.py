@@ -283,20 +283,24 @@ async def ask_ai(message, prompt: str, user_id: int, markup=None):
             except Exception as error:
                 logging.warning("Oqimli javob yutildi, bitta xabarga qaytamiz: %s", error)
         if answer is None:
-            try:
-                text, response = await core.send_text(session["chat"], prompt, dispatch)
-            except Exception as error:
-                if core.should_switch_key(error):
-                    core.cool_user_key(user_id, error)
-                    logging.warning("Sessiya kaliti band, boshqa kalitda qayta uriladi: %s", error)
-                    session = rebuild_session(user_id)
+            tries = max(2, len(core.pool.clients))
+            while True:
+                try:
                     text, response = await core.send_text(session["chat"], prompt, dispatch)
-                elif not session.get("search"):
-                    raise
-                else:
+                    break
+                except Exception as error:
+                    tries -= 1
+                    if core.should_switch_key(error) and tries:
+                        core.cool_user_key(user_id, error)
+                        logging.warning("Sessiya kaliti band, boshqa kalitda qayta uriladi: %s", error)
+                        session = rebuild_session(user_id)
+                        continue
+                    if not session.get("search"):
+                        raise
                     logging.warning("Sessiyada web-search xatosi, o'chirilib qayta uriladi: %s", error)
                     session = drop_search(user_id)
                     text, response = await core.send_text(session["chat"], prompt, dispatch)
+                    break
             answer = (text or "").strip() or core.extract_text(response) or "Kechirasiz, javob shakllanmadi."
             sources = core.extract_sources(response) if session.get("search") else []
             sent = await send_long(message, answer, user_id, markup=markup, sources=sources)

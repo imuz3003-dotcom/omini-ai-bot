@@ -47,6 +47,18 @@ class RateLimited(Exception):
         self.code = code
 
 
+class ApiKeyInvalid(Exception):
+    """Google o'lik kalit uchun ba'zan 401 emas, 400 INVALID_ARGUMENT qaytaradi."""
+
+    def __init__(self):
+        super().__init__(
+            "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': 'API key not valid. "
+            "Please pass a valid API key.', 'status': 'INVALID_ARGUMENT', 'details': "
+            "[{'reason': 'API_KEY_INVALID'}]}}"
+        )
+        self.code = 400
+
+
 class FakeResponse:
     """Javob dubligati — `extract_text` faqat `.text` maydonini oladi."""
 
@@ -124,11 +136,28 @@ class BrokenKey(unittest.TestCase):
         self.assertGreater(dead_until, pool.clock() + pool.cooldown)
         self.assertLessEqual(pool.cooled[1], pool.clock() + pool.cooldown)
 
+    def test_dead_key_answered_as_400_is_still_broken(self):
+        self.assertTrue(core.is_broken_key(ApiKeyInvalid()))
+        self.assertFalse(core.is_rate_limited(ApiKeyInvalid()))
+        self.assertTrue(core.should_switch_key(ApiKeyInvalid()))
+
+    def test_400_api_key_invalid_switches_to_the_next_key(self):
+        first = FakeClient("A", [ApiKeyInvalid()])
+        second = FakeClient("B", ["javob B"])
+        pool = core.KeyPool([first, second])
+        with patch.object(core, "pool", pool):
+            text, _ = core.ask_once("gemini-test", "salom", False)
+        self.assertEqual(text, "javob B")
+        self.assertEqual(pool.pick()[0], 1)
+
 
 class Pool(unittest.TestCase):
     def test_comma_separated_env_yields_multiple_keys(self):
         self.assertEqual(core.parse_keys(" a , b ,,c "), ["a", "b", "c"])
         self.assertEqual(core.parse_keys("  "), [])
+
+    def test_paste_with_newlines_still_yields_multiple_keys(self):
+        self.assertEqual(core.parse_keys(" a\nb ,, c\n"), ["a", "b", "c"])
 
     def test_primary_key_is_used_while_healthy(self):
         pool = core.KeyPool([FakeClient("A"), FakeClient("B")])
@@ -300,6 +329,50 @@ class AskAiFailover(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rebuilt, [4242])
         self.assertEqual(asked, ["chat:A", "chat:B"])
         cooled.assert_called_once_with(4242, error)
+
+    async def test_two_dead_keys_in_a_row_still_reach_the_live_one(self):
+        """Havuzda oldinda ikkita o'lik kalit bo'lsa ham javob yetib kelishi kerak."""
+        import contextlib
+
+        import bot as app
+
+        session = {"chat": "chat:A", "search": False}
+        chats = ["chat:A", "chat:B", "chat:C"]
+        asked = []
+
+        async def fake_send_text(chat, prompt, dispatch=None):
+            asked.append(chat)
+            if len(asked) <= 2:
+                raise RateLimited(401)
+            return "javob C", None
+
+        async def fake_stream_reply(*args, **kwargs):
+            raise RateLimited(401)
+
+        @contextlib.asynccontextmanager
+        async def fake_keep_typing(chat_id, action=None):
+            yield
+
+        def fake_rebuild(user_id, use_search=None):
+            session["chat"] = chats[min(len(asked), 2)]
+            return session
+
+        pool = core.KeyPool([FakeClient("A"), FakeClient("B"), FakeClient("C")])
+        with patch.object(app, "keep_typing", fake_keep_typing), \
+                patch.object(app, "ensure_session", lambda user_id: session), \
+                patch.object(app, "rebuild_session", fake_rebuild), \
+                patch.object(app, "tool_dispatch", lambda user_id, private: None), \
+                patch.object(app, "stream_reply", fake_stream_reply), \
+                patch.object(app, "send_long", new_callable=AsyncMock) as delivered, \
+                patch.object(app.core, "pool", pool), \
+                patch.object(app.core.store, "add_message"), \
+                patch.object(app.core.store, "bump"), \
+                patch.object(app.core, "send_text", fake_send_text), \
+                patch.object(app.core, "cool_user_key", new_callable=Mock) as cooled:
+            await app.ask_ai(self.Message(), "salom", 4242)
+        self.assertEqual(asked, ["chat:A", "chat:B", "chat:C"])
+        self.assertEqual(cooled.call_count, 2)
+        self.assertTrue(delivered.await_count, "foydalanuvchiga javob yuborilishi kerak")
 
     async def test_plain_error_is_not_retried_on_another_key(self):
         import contextlib
