@@ -69,6 +69,8 @@ def parse_keys(raw: str) -> list:
 
 # Kvotaga urilgan kalit qancha vaqtga chetga chiqadi (sekund).
 KEY_COOLDOWN = float(os.getenv("KEY_COOLDOWN", "60"))
+# Kalitning o'zi yaroqsiz bo'lsa (401/403) — uni keraksiz sinab turmaslik uchun uzoqroq.
+KEY_PENALTY = float(os.getenv("KEY_PENALTY", "600"))
 
 
 class KeyPool:
@@ -106,6 +108,21 @@ def is_rate_limited(error) -> bool:
     return any(mark in text for mark in ("429", "503", "resource_exhausted", "rate limit"))
 
 
+def is_broken_key(error) -> bool:
+    """401/403 — kalitning o'zi yaroqsiz (o'chirilgan yoki cheklangan)."""
+    code = getattr(error, "code", None)
+    if isinstance(code, int):
+        return code in (401, 403)
+    text = str(error).lower()
+    return any(mark in text for mark in ("401", "403", "api key not valid", "unauthenticated",
+                                         "permission denied"))
+
+
+def should_switch_key(error) -> bool:
+    """Ushbu xato boshqa kalitda qayta urinishga arziydimi."""
+    return is_rate_limited(error) or is_broken_key(error)
+
+
 # user_id -> kalit indeksi: sessiya qaysi kalitda ochilgani shu yerda turadi.
 _user_key = {}
 
@@ -114,11 +131,15 @@ def user_key_index(user_id: int):
     return _user_key.get(user_id)
 
 
-def cool_user_key(user_id: int, seconds=None) -> None:
-    """Foydalanuvchi sessiyasining kalitini chetlatadi; sessiya bo'lmasa — hech narsa."""
+def cool_user_key(user_id: int, error=None) -> None:
+    """Foydalanuvchi sessiyasining kalitini chetlatadi; sessiya bo'lmasa — hech narsa.
+
+    Xato kalitning o'zi yaroqsizligini ko'rsatsa (401/403), uzoqroq chetlaymiz.
+    """
     index = _user_key.get(user_id)
-    if index is not None:
-        pool.cool(index, seconds)
+    if index is None:
+        return
+    pool.cool(index, KEY_PENALTY if error is not None and is_broken_key(error) else None)
 
 
 CREATOR_RULE = (
@@ -965,6 +986,10 @@ def ask_once(model: str, contents, use_search: bool, system_instruction: str = B
                     pool.cool(index)
                     logging.warning("Kalit #%d kvotaga urildi, keyingisiga o'tamiz: %s", index, error)
                     continue
+                if is_broken_key(error):
+                    pool.cool(index, KEY_PENALTY)
+                    logging.warning("Kalit #%d yaroqsiz (401/403), %d s ga chetlatildi", index, int(KEY_PENALTY))
+                    continue
                 if not want_search:
                     raise
                 _search_broken.add(model)
@@ -1233,6 +1258,7 @@ def generate_image_gemini(prompt: str, aspect: str = None, refs: list = None):
 
     last_error = None
     quota_hit = False
+    broken_hit = False
     for name in models:
         for _ in range(len(pool.clients)):
             index, client = pool.pick()
@@ -1245,6 +1271,11 @@ def generate_image_gemini(prompt: str, aspect: str = None, refs: list = None):
                     quota_hit = True
                     pool.cool(index)
                     logging.warning("Rasm: kalit #%d band (%s), keyingisiga o'tamiz", index, name)
+                    continue
+                if is_broken_key(error):
+                    broken_hit = True
+                    pool.cool(index, KEY_PENALTY)
+                    logging.warning("Rasm: kalit #%d yaroqsiz (%s), keyingisiga o'tamiz", index, name)
                     continue
                 if "quota" in lowered or "billing" in lowered:
                     raise ImageQuotaError(f"{name}: kvota tugagan (billing ulanganda ishlaydi)") from error
@@ -1259,6 +1290,8 @@ def generate_image_gemini(prompt: str, aspect: str = None, refs: list = None):
             return data, mime, name
     if quota_hit:
         raise ImageQuotaError(f"{models[0]}: kvota tugagan (billing ulanganda ishlaydi)")
+    if broken_hit:
+        raise ImageQuotaError("Hech bir Gemini kaliti rasm uchun yaroqli emas (401/403)")
     raise ImageQuotaError(f"{models[0]} rasm uchun mavjud emas: {str(last_error)[:120]}")
 
 

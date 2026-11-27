@@ -286,8 +286,8 @@ async def ask_ai(message, prompt: str, user_id: int, markup=None):
             try:
                 text, response = await core.send_text(session["chat"], prompt, dispatch)
             except Exception as error:
-                if core.is_rate_limited(error):
-                    core.cool_user_key(user_id)
+                if core.should_switch_key(error):
+                    core.cool_user_key(user_id, error)
                     logging.warning("Sessiya kaliti band, boshqa kalitda qayta uriladi: %s", error)
                     session = rebuild_session(user_id)
                     text, response = await core.send_text(session["chat"], prompt, dispatch)

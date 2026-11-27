@@ -86,6 +86,45 @@ class FakeClient:
         self.chats = FakeChats(name)
 
 
+class BrokenKey(unittest.TestCase):
+    def test_broken_key_detected_from_code(self):
+        self.assertTrue(core.is_broken_key(RateLimited(401)))
+        self.assertTrue(core.is_broken_key(RateLimited(403)))
+        self.assertFalse(core.is_broken_key(RateLimited(429)))
+        self.assertFalse(core.is_broken_key(RateLimited(400)))
+
+    def test_broken_key_detected_from_text(self):
+        self.assertTrue(core.is_broken_key(
+            Exception("401 UNAUTHENTICATED. {'error': {'message': 'API key not valid.'}}")))
+        self.assertFalse(core.is_broken_key(Exception("boshqa xato")))
+
+    def test_switch_covers_quota_and_dead_key(self):
+        self.assertTrue(core.should_switch_key(RateLimited(429)))
+        self.assertTrue(core.should_switch_key(RateLimited(401)))
+        self.assertFalse(core.should_switch_key(Exception("model yo'q")))
+
+    def test_dead_key_is_cooled_longer_and_next_key_answers(self):
+        first = FakeClient("A", [RateLimited(401)])
+        second = FakeClient("B", ["javob B"])
+        pool = core.KeyPool([first, second])
+        with patch.object(core, "pool", pool):
+            text, _ = core.ask_once("gemini-test", "salom", False)
+        self.assertEqual(text, "javob B")
+        self.assertGreater(pool.cooled[0], pool.clock() + pool.cooldown,
+                           "o'lik kalit oddiy band kalitdan uzoqroqqa chetlanishi kerak")
+
+    def test_user_key_cooling_scales_with_the_error(self):
+        pool = core.KeyPool([FakeClient("A"), FakeClient("B")])
+        with patch.object(core, "pool", pool):
+            core._user_key[4242] = 0
+            core.cool_user_key(4242, RateLimited(401))
+            dead_until = pool.cooled[0]
+            core._user_key[7777] = 1
+            core.cool_user_key(7777, RateLimited(429))
+        self.assertGreater(dead_until, pool.clock() + pool.cooldown)
+        self.assertLessEqual(pool.cooled[1], pool.clock() + pool.cooldown)
+
+
 class Pool(unittest.TestCase):
     def test_comma_separated_env_yields_multiple_keys(self):
         self.assertEqual(core.parse_keys(" a , b ,,c "), ["a", "b", "c"])
@@ -207,22 +246,24 @@ class AskAiFailover(unittest.IsolatedAsyncioTestCase):
 
     Message = FakeMessage
 
-    async def test_rate_limit_switches_the_key_and_answers(self):
+    async def _drive(self, code):
+        """Berilgan xato kodi bilan ask_ai ni yuritadi: (rebuilt, asked, cooled, error)."""
         import contextlib
 
         import bot as app
 
         session = {"chat": "chat:A", "search": False}
         asked = []
+        error = RateLimited(code)
 
         async def fake_send_text(chat, prompt, dispatch=None):
             asked.append(chat)
             if len(asked) == 1:
-                raise RateLimited(429)
+                raise error
             return "javob B", None
 
         async def fake_stream_reply(*args, **kwargs):
-            raise RateLimited(429)
+            raise error
 
         @contextlib.asynccontextmanager
         async def fake_keep_typing(chat_id, action=None):
@@ -246,10 +287,19 @@ class AskAiFailover(unittest.IsolatedAsyncioTestCase):
                 patch.object(app.core, "send_text", fake_send_text), \
                 patch.object(app.core, "cool_user_key", new_callable=Mock) as cooled:
             await app.ask_ai(self.Message(), "salom", 4242)
+        return rebuilt, asked, cooled, error
 
+    async def test_rate_limit_switches_the_key_and_answers(self):
+        rebuilt, asked, cooled, error = await self._drive(429)
         self.assertEqual(rebuilt, [4242], "sessiya qayta qurilishi kerak")
         self.assertEqual(asked, ["chat:A", "chat:B"])
-        cooled.assert_called_once_with(4242)
+        cooled.assert_called_once_with(4242, error)
+
+    async def test_dead_key_switches_the_key_too(self):
+        rebuilt, asked, cooled, error = await self._drive(401)
+        self.assertEqual(rebuilt, [4242])
+        self.assertEqual(asked, ["chat:A", "chat:B"])
+        cooled.assert_called_once_with(4242, error)
 
     async def test_plain_error_is_not_retried_on_another_key(self):
         import contextlib
