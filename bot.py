@@ -196,15 +196,26 @@ def ensure_session(user_id: int, fresh: bool = False) -> dict:
     return session
 
 
-def drop_search(user_id: int) -> dict:
-    """Model web-search'ni ko'tara olmasa, qidiruvni o'chirib sessiyani qayta ochadi."""
+def rebuild_session(user_id: int, use_search: bool = None) -> dict:
+    """Sessiyani mavjud tarix bilan qayta ochadi — kalit/alishganda kerak.
+
+    Chat obyekti bitta Gemini kalitiga bog'langan, shuning uchun kalit
+    kvotaga urilsa uni bazadagi suhbatdan boshqa kalitda qurish shart.
+    """
     user = core.store.user(user_id)
     has_devices = bool(HUB.devices_of(user_id))
-    chat, _ = core.create_chat(user_id, instruction_for(user, has_devices), model_of(user),
-                               False, replay=True, with_devices=has_devices)
-    session = core.remember_session(user_id, chat, False)
-    session.update({"model": model_of(user), "persona": user.get("persona") or "general", "search": False})
+    want_search = bool(user.get("search")) if use_search is None else use_search
+    chat, search_on = core.create_chat(user_id, instruction_for(user, has_devices), model_of(user),
+                                       want_search, replay=True, with_devices=has_devices)
+    session = core.remember_session(user_id, chat, search_on)
+    session.update({"model": model_of(user), "persona": user.get("persona") or "general",
+                    "search": search_on, "devices": has_devices})
     return session
+
+
+def drop_search(user_id: int) -> dict:
+    """Model web-search'ni ko'tara olmasa, qidiruvni o'chirib sessiyani qayta ochadi."""
+    return rebuild_session(user_id, use_search=False)
 
 
 async def stream_reply(message, session, prompt: str, user_id: int, markup=None, dispatch=None):
@@ -275,11 +286,17 @@ async def ask_ai(message, prompt: str, user_id: int, markup=None):
             try:
                 text, response = await core.send_text(session["chat"], prompt, dispatch)
             except Exception as error:
-                if not session.get("search"):
+                if core.is_rate_limited(error):
+                    core.cool_user_key(user_id)
+                    logging.warning("Sessiya kaliti band, boshqa kalitda qayta uriladi: %s", error)
+                    session = rebuild_session(user_id)
+                    text, response = await core.send_text(session["chat"], prompt, dispatch)
+                elif not session.get("search"):
                     raise
-                logging.warning("Sessiyada web-search xatosi, o'chirilib qayta uriladi: %s", error)
-                session = drop_search(user_id)
-                text, response = await core.send_text(session["chat"], prompt, dispatch)
+                else:
+                    logging.warning("Sessiyada web-search xatosi, o'chirilib qayta uriladi: %s", error)
+                    session = drop_search(user_id)
+                    text, response = await core.send_text(session["chat"], prompt, dispatch)
             answer = (text or "").strip() or core.extract_text(response) or "Kechirasiz, javob shakllanmadi."
             sources = core.extract_sources(response) if session.get("search") else []
             sent = await send_long(message, answer, user_id, markup=markup, sources=sources)

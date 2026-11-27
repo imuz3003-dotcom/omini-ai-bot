@@ -57,7 +57,69 @@ PROFANITY_BAN_HOURS = max(0, int(os.getenv("PROFANITY_BAN_HOURS", "0")))
 if not BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("BOT_TOKEN yoki GEMINI_API_KEY topilmadi! .env faylini tekshiring.")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+
+def parse_keys(raw: str) -> list:
+    """GEMINI_API_KEY'ni vergul bilan bo'lib kalitlar ro'yxatini qaytaradi.
+
+    Bitta kalit yozilgan eski holat ham shu funksiadan o'tadi — ro'yxat uzunligi
+    1 bo'ladi va xulq avvalgidek qoladi.
+    """
+    return [key.strip() for key in (raw or "").split(",") if key.strip()]
+
+
+# Kvotaga urilgan kalit qancha vaqtga chetga chiqadi (sekund).
+KEY_COOLDOWN = float(os.getenv("KEY_COOLDOWN", "60"))
+
+
+class KeyPool:
+    """Gemini klientlari navbati: kalitga urilganda uni bir necha daqiqaga chetlatadi."""
+
+    def __init__(self, clients, clock=time.monotonic, cooldown=KEY_COOLDOWN):
+        self.clients = list(clients)
+        self.clock = clock
+        self.cooldown = cooldown
+        self.cooled = [0.0] * len(self.clients)
+
+    def pick(self):
+        """Birinchi "salomat" kalit; hammasi soviganda eng tez ochiladigani."""
+        now = self.clock()
+        for index, until in enumerate(self.cooled):
+            if until <= now:
+                return index, self.clients[index]
+        index = min(range(len(self.clients)), key=lambda i: self.cooled[i])
+        return index, self.clients[index]
+
+    def cool(self, index, seconds=None):
+        self.cooled[index] = self.clock() + (self.cooldown if seconds is None else seconds)
+
+
+API_KEYS = parse_keys(GEMINI_API_KEY)
+pool = KeyPool([genai.Client(api_key=key) for key in API_KEYS])
+
+
+def is_rate_limited(error) -> bool:
+    """429/503 (kvota yoki vaqtincha to'yinganlik) — boshqa kalitda sinash kerak."""
+    code = getattr(error, "code", None)
+    if isinstance(code, int):
+        return code in (429, 503)
+    text = str(error).lower()
+    return any(mark in text for mark in ("429", "503", "resource_exhausted", "rate limit"))
+
+
+# user_id -> kalit indeksi: sessiya qaysi kalitda ochilgani shu yerda turadi.
+_user_key = {}
+
+
+def user_key_index(user_id: int):
+    return _user_key.get(user_id)
+
+
+def cool_user_key(user_id: int, seconds=None) -> None:
+    """Foydalanuvchi sessiyasining kalitini chetlatadi; sessiya bo'lmasa — hech narsa."""
+    index = _user_key.get(user_id)
+    if index is not None:
+        pool.cool(index, seconds)
+
 
 CREATOR_RULE = (
     "MUHIM QOIDA: Sizning yagona yaratuvchingiz va dasturchingiz — Muslimbek. "
@@ -827,12 +889,14 @@ def create_chat(user_id: int, system_instruction: str, model: str, use_search: b
             attempts.append((want_search, False))
     last_error = None
     for want_search, want_devices in attempts:
+        index, client = pool.pick()
         try:
             chat = client.chats.create(
                 model=model,
                 config=build_config(want_search, system_instruction, want_devices),
                 history=history,
             )
+            _user_key[user_id] = index
             return chat, want_search
         except Exception as error:
             last_error = error
@@ -878,22 +942,34 @@ def extract_sources(response) -> list:
 
 
 def ask_once(model: str, contents, use_search: bool, system_instruction: str = BASE_INSTRUCTION) -> tuple:
-    """Bir martalik so'rov (media/audit uchun chat sessiyasi kerak emas)."""
+    """Bir martalik so'rov (media/audit uchun chat sessiyasi kerak emas).
+
+    Kalit kvotaga urilsa keyingi kalitda sinanadi; boshqa xato avvalgidek
+    yuqoriga qaytariladi (qidiruv bilan bo'lsa — qidiruvni o'chirib qayta uriladi).
+    """
     attempts = [use_search, False] if use_search and model not in _search_broken else [False]
     last_error = None
     for want_search in attempts:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=build_config(want_search, system_instruction),
-            )
-            return extract_text(response), extract_sources(response)
-        except Exception as error:
-            last_error = error
-            if want_search:
+        for _ in range(len(pool.clients)):
+            index, client = pool.pick()
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=build_config(want_search, system_instruction),
+                )
+                return extract_text(response), extract_sources(response)
+            except Exception as error:
+                last_error = error
+                if is_rate_limited(error):
+                    pool.cool(index)
+                    logging.warning("Kalit #%d kvotaga urildi, keyingisiga o'tamiz: %s", index, error)
+                    continue
+                if not want_search:
+                    raise
                 _search_broken.add(model)
                 logging.warning("Web-search bilan so'rov yutildi: %s", error)
+                break
     raise last_error
 
 
@@ -1156,23 +1232,33 @@ def generate_image_gemini(prompt: str, aspect: str = None, refs: list = None):
         models.append(IMAGE_MODEL_FALLBACK)
 
     last_error = None
+    quota_hit = False
     for name in models:
-        try:
-            response = client.models.generate_content(model=name, contents=contents, config=config)
-        except Exception as error:
-            text = str(error)
-            lowered = text.lower()
-            if "429" in text or "resource_exhausted" in lowered or "quota" in lowered or "billing" in lowered:
-                raise ImageQuotaError(f"{name}: kvota tugagan (billing ulanganda ishlaydi)") from error
-            if "404" in text or "not_found" in lowered or "no longer available" in lowered:
-                last_error = error
-                continue
-            raise
-        data, mime = extract_image_part(response)
-        if not data:
-            blocked = getattr(response, "prompt_feedback", None)
-            raise RuntimeError(f"{name} javobda rasm bermadi{'' if not blocked else ': ' + str(blocked)[:120]}")
-        return data, mime, name
+        for _ in range(len(pool.clients)):
+            index, client = pool.pick()
+            try:
+                response = client.models.generate_content(model=name, contents=contents, config=config)
+            except Exception as error:
+                text = str(error)
+                lowered = text.lower()
+                if is_rate_limited(error):
+                    quota_hit = True
+                    pool.cool(index)
+                    logging.warning("Rasm: kalit #%d band (%s), keyingisiga o'tamiz", index, name)
+                    continue
+                if "quota" in lowered or "billing" in lowered:
+                    raise ImageQuotaError(f"{name}: kvota tugagan (billing ulanganda ishlaydi)") from error
+                if "404" in text or "not_found" in lowered or "no longer available" in lowered:
+                    last_error = error
+                    break
+                raise
+            data, mime = extract_image_part(response)
+            if not data:
+                blocked = getattr(response, "prompt_feedback", None)
+                raise RuntimeError(f"{name} javobda rasm bermadi{'' if not blocked else ': ' + str(blocked)[:120]}")
+            return data, mime, name
+    if quota_hit:
+        raise ImageQuotaError(f"{models[0]}: kvota tugagan (billing ulanganda ishlaydi)")
     raise ImageQuotaError(f"{models[0]} rasm uchun mavjud emas: {str(last_error)[:120]}")
 
 
